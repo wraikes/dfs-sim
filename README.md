@@ -65,7 +65,7 @@ uv pip install -e .
 
 ```python
 # Example usage (coming soon)
-from dfs_sim import DFSOptimizer
+from dfs-sim import DFSOptimizer
 
 optimizer = DFSOptimizer(
     sport="nfl",
@@ -134,7 +134,7 @@ Key parameters can be configured in `config/settings.yaml`:
 pytest
 
 # Run with example data
-python -m dfs_sim.cli --week 1 --sport nfl
+python -m dfs-sim.cli --week 1 --sport nfl
 
 # Start Jupyter for analysis
 jupyter notebook

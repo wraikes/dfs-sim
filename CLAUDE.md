@@ -116,10 +116,10 @@ black src/ tests/
 ruff check --fix src/ tests/
 
 # Generate lineups
-python -m dfs_sim.cli generate --week 1 --sport nfl --entries 20
+python -m dfs-sim.cli generate --week 1 --sport nfl --entries 20
 
 # Run backtesting
-python -m dfs_sim.cli backtest --start 2023-09-01 --end 2024-01-01
+python -m dfs-sim.cli backtest --start 2023-09-01 --end 2024-01-01
 ```
 
 ## External Resources
