@@ -51,12 +51,8 @@ htmlcov/
 .tox/
 .hypothesis/
 
-# Data files
-data/raw/*.json
-data/raw/*.csv
-data/processed/*.csv
-data/cache/*.pkl
-data/cache/*.npy
+# Data files - NO RAW DATA IN REPO
+data/
 
 # Output files
 outputs/*.csv
