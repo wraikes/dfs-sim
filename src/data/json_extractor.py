@@ -453,6 +453,14 @@ class MMAJsonExtractor(BaseJsonExtractor):
         if not ownership_df.empty:
             final_df = final_df.merge(ownership_df[['salary_id', 'ownership', 'doubleup']], 
                                     on='salary_id', how='left')
+            # Fill missing ownership with 0%
+            final_df['ownership'] = final_df['ownership'].fillna(0.0)
+            final_df['doubleup'] = final_df['doubleup'].fillna(0.0)
+        else:
+            # If no ownership data, set all to 0%
+            final_df['ownership'] = 0.0
+            final_df['doubleup'] = 0.0
+            
         if not stats_df.empty:
             stats_merge = stats_df.drop(columns=['player_id'], errors='ignore')
             final_df = final_df.merge(stats_merge, on='salary_id', how='left')
