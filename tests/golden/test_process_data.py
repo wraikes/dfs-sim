@@ -9,7 +9,7 @@ from pathlib import Path
 
 def test_process_data_mma():
     """Test MMA process_data.py processes raw data and generates CSV."""
-    test_path = Path("data/mma/99")
+    test_path = Path("data/mma/dk/99")
     
     # Verify test data exists (from setup_data test)
     raw_file = test_path / "raw/dk_99.json"
@@ -22,7 +22,8 @@ def test_process_data_mma():
     result = subprocess.run([
         sys.executable, "src/cli/process_data.py",
         "--sport", "mma",
-        "--pid", "99"
+        "--pid", "99",
+        "--site", "dk"
     ], capture_output=True, text=True)
     
     # Check command succeeded
@@ -83,6 +84,7 @@ def test_process_data_summary():
         sys.executable, "src/cli/process_data.py",
         "--sport", "mma", 
         "--pid", "99",
+        "--site", "dk",
         "--summary-only"
     ], capture_output=True, text=True)
     

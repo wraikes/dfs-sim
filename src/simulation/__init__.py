@@ -6,10 +6,12 @@ from .correlations import (
     CorrelationRule,
     build_correlation_matrix
 )
+from .simulator import Simulator
 
 __all__ = [
     'BaseCorrelationBuilder',
     'MMACorrelationBuilder',
     'CorrelationRule',
-    'build_correlation_matrix'
+    'build_correlation_matrix',
+    'Simulator'
 ]

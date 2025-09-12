@@ -6,17 +6,26 @@ from typing import Dict, List
 from .player import Position
 
 
-class SiteName(Enum):
-    """Supported DFS sites."""
-    DRAFTKINGS = "DraftKings"
-    FANDUEL = "FanDuel"  # Future support
+class SiteCode(Enum):
+    """DFS site codes."""
+    DK = "dk"  # DraftKings
+    FD = "fd"  # FanDuel
+    
+    @property
+    def full_name(self) -> str:
+        """Get the full site name."""
+        names = {
+            SiteCode.DK: "DraftKings",
+            SiteCode.FD: "FanDuel"
+        }
+        return names[self]
 
 
 @dataclass
 class Site:
     """Configuration for a specific DFS site."""
     
-    name: SiteName
+    name: SiteCode
     sport: str
     salary_cap: int
     roster_slots: Dict[Position, int]
@@ -27,7 +36,7 @@ class Site:
     
     def __post_init__(self):
         """Set site-specific defaults."""
-        if self.name == SiteName.DRAFTKINGS:
+        if self.name == SiteCode.DK:
             self._set_draftkings_defaults()
     
     def _set_draftkings_defaults(self):
@@ -130,7 +139,7 @@ class Site:
     
     def get_csv_upload_format(self) -> List[str]:
         """Get the position order for CSV upload to this site."""
-        if self.name == SiteName.DRAFTKINGS:
+        if self.name == SiteCode.DK:
             if self.sport == 'nfl':
                 return ['QB', 'RB', 'RB', 'WR', 'WR', 'WR', 'TE', 'FLEX', 'DST']
             elif self.sport == 'nba':
@@ -146,14 +155,14 @@ class Site:
 
 # Preset configurations
 DRAFTKINGS_NFL = Site(
-    name=SiteName.DRAFTKINGS,
+    name=SiteCode.DK,
     sport='nfl',
     salary_cap=50000,
     roster_slots={}  # Will be set in __post_init__
 )
 
 DRAFTKINGS_NBA = Site(
-    name=SiteName.DRAFTKINGS,
+    name=SiteCode.DK,
     sport='nba',
     salary_cap=50000,
     roster_slots={}  # Will be set in __post_init__

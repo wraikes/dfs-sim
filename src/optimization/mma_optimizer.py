@@ -63,6 +63,19 @@ class MMAOptimizer(BaseOptimizer):
         """Create MMA field generator."""
         return MMAFieldGenerator(self.players)
     
+    def _has_opponents(self, players: List[Player]) -> bool:
+        """Check if any players in the list are opponents of each other."""
+        for i, p1 in enumerate(players):
+            for j, p2 in enumerate(players):
+                if i >= j:
+                    continue
+                if p1.opponent and (p1.opponent.upper() == p2.name.upper() or
+                                   p1.opponent.upper() in p2.name.upper()):
+                    return True
+                if p2.opponent and p2.opponent.upper() == p1.name.upper():
+                    return True
+        return False
+    
     def _validate_lineup(self, players: List[Player]) -> bool:
         """Validate MMA lineup meets sport-specific rules."""
         if len(players) != 6:
@@ -74,13 +87,8 @@ class MMAOptimizer(BaseOptimizer):
             return False
         
         # Check no opponents rule
-        for i, p1 in enumerate(players):
-            for j, p2 in enumerate(players):
-                if i >= j:
-                    continue
-                if p1.opponent and (p1.opponent.upper() == p2.name.upper() or
-                                   p1.opponent.upper() in p2.name.upper()):
-                    return False
+        if self._has_opponents(players):
+            return False
         
         # Check ownership constraints
         total_ownership = sum(p.ownership for p in players)
@@ -193,14 +201,7 @@ class MMAOptimizer(BaseOptimizer):
                         fighter = random.choice(available)
                     
                     # Check for opponents before adding
-                    valid = True
-                    for existing in players:
-                        if (fighter.opponent and fighter.opponent.upper() == existing.name.upper()) or \
-                           (existing.opponent and existing.opponent.upper() == fighter.name.upper()):
-                            valid = False
-                            break
-                    
-                    if valid:
+                    if not self._has_opponents(players + [fighter]):
                         players.append(fighter)
                         used_ids.add(fighter.player_id)
                         available.remove(fighter)

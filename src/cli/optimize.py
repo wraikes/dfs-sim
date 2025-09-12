@@ -25,9 +25,10 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, List, Optional
 import time
+from src.models.site import SiteCode
 
 from src.optimization.base_optimizer import BaseOptimizer
-from src.simulation.simulator import MonteCarloSimulator
+from src.simulation.simulator import Simulator
 
 
 def create_optimizer(sport: str, pid: str) -> BaseOptimizer:
@@ -51,15 +52,15 @@ def _import_mma_optimizer():
     return MMAOptimizer
 
 
-def load_processed_data(sport: str, pid: str) -> pd.DataFrame:
+def load_processed_data(sport: str, pid: str, site: SiteCode = SiteCode.DK) -> pd.DataFrame:
     """Load processed CSV data."""
-    data_path = Path(f"data/{sport}/{pid}/csv")
+    data_path = Path(f"data/{sport}/{site.value}/{pid}/csv")
     csv_file = data_path / f"dk_{pid}_extracted.csv"
     
     if not csv_file.exists():
         raise FileNotFoundError(
             f"No processed data found: {csv_file}\n"
-            f"Run: python process_data.py --sport {sport} --pid {pid}"
+            f"Run: python process_data.py --sport {sport} --pid {pid} --site {site.value}"
         )
     
     df = pd.read_csv(csv_file)
@@ -107,9 +108,9 @@ def display_lineup_summary(lineups: List, sport: str):
             print(f"   99th Percentile: {best_lineup.percentile_99:.1f}")
 
 
-def export_lineups(lineups: List, sport: str, pid: str, output_format: str = 'csv') -> Path:
+def export_lineups(lineups: List, sport: str, pid: str, site: SiteCode, output_format: str = 'csv') -> Path:
     """Export lineups to file."""
-    output_dir = Path(f"data/{sport}/{pid}/output")
+    output_dir = Path(f"data/{sport}/{site.value}/{pid}/output")
     output_dir.mkdir(exist_ok=True)
     
     if output_format.lower() == 'csv':
@@ -188,6 +189,9 @@ def main():
                        help='Sport to optimize lineups for')
     parser.add_argument('--pid', type=str, required=True,
                        help='Contest/event identifier')
+    parser.add_argument('--site', type=str, default='dk',
+                       choices=['dk', 'fd'],
+                       help='DFS site: dk=DraftKings, fd=FanDuel (default: dk)')
     parser.add_argument('--entries', type=int, default=20,
                        help='Number of lineups to generate (default: 20)')
     parser.add_argument('--simulations', type=int, default=25000,
@@ -204,18 +208,22 @@ def main():
     print("=" * 60)
     print(f"Sport: {args.sport.upper()}")
     print(f"PID: {args.pid}")
+    print(f"Site: {args.site.upper()}")
     print(f"Entries: {args.entries}")
     print(f"Simulations: {args.simulations:,}")
     print("=" * 60)
     
     try:
+        # Convert site string to enum
+        site = SiteCode(args.site)
+        
         # Load processed data
         print("\n1️⃣ Loading processed data...")
-        df = load_processed_data(args.sport, args.pid)
+        df = load_processed_data(args.sport, args.pid, site)
         
         if args.summary_only:
             # Just display summary of existing lineups
-            output_dir = Path(f"data/{args.sport}/{args.pid}/output")
+            output_dir = Path(f"data/{args.sport}/{site.value}/{args.pid}/output")
             lineup_file = output_dir / f"lineups_{args.pid}.csv"
             if not lineup_file.exists():
                 print(f"❌ No existing lineups found: {lineup_file}")
@@ -237,7 +245,7 @@ def main():
         print(f"\n3️⃣ Running Monte Carlo simulations...")
         start_time = time.time()
         
-        simulator = MonteCarloSimulator()
+        simulator = Simulator()
         
         # Simulate each player
         print(f"   🎲 Simulating {len(optimizer.players)} players × {args.simulations:,} runs...")
@@ -266,7 +274,7 @@ def main():
         
         # Export lineups
         print(f"\n6️⃣ Exporting lineups...")
-        output_file = export_lineups(lineups, args.sport, args.pid, args.export_format)
+        output_file = export_lineups(lineups, args.sport, args.pid, site, args.export_format)
         
         # Display summary
         display_lineup_summary(lineups, args.sport)

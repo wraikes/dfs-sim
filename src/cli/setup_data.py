@@ -22,39 +22,33 @@ import sys
 from pathlib import Path
 from typing import Dict, List
 import json
+from src.models.site import SiteCode
 
 
 class DataSetupManager:
     """Manages data setup for all sports."""
     
-    def __init__(self, sport: str, pid: str):
+    def __init__(self, sport: str, pid: str, site: str = 'draftkings'):
         self.sport = sport.lower()
         self.pid = pid
-        self.base_path = Path(f"data/{self.sport}/{self.pid}")
+        self.site = site.lower()
+        self.base_path = Path(f"data/{self.sport}/{self.site}/{self.pid}")
         
         # Sport-specific configurations
         self.sport_configs = {
             'mma': {
                 'name': 'MMA/UFC',
-                'raw_files': ['salaries.csv', 'ownership.csv', 'projections.csv'],
+                'linestar_sport_id': 8,
+                'site_ids': {
+                    'dk': 1,
+                    'fd': 2
+                },
                 'data_sources': [
                     {
-                        'name': 'DraftKings Salaries',
-                        'url_template': 'https://www.draftkings.com/lineup/getavailableplayerscsv?contestTypeId=21&draftGroupId={pid}',
-                        'file': 'salaries.csv',
-                        'description': 'Player salaries and basic info'
-                    },
-                    {
-                        'name': 'RotoGrinders Ownership',
-                        'url_template': 'https://rotogrinders.com/projected-ownership/UFC-{pid}',
-                        'file': 'ownership.csv', 
-                        'description': 'Projected ownership percentages'
-                    },
-                    {
-                        'name': 'FantasyLabs Projections',
-                        'url_template': 'https://www.fantasylabs.com/api/players/{pid}/UFC',
-                        'file': 'projections.json',
-                        'description': 'Player projections and metadata'
+                        'name': 'LineStar Contest Data',
+                        'url_template': 'https://www.linestarapp.com/DesktopModules/DailyFantasyApi/API/Fantasy/GetSalariesV4?sport={sport_id}&site={site_id}&periodId={pid}',
+                        'file': 'dk_{pid}.json',
+                        'description': 'Complete contest data including salaries, projections, and ownership'
                     }
                 ],
                 'newsletter_file': 'newsletter_signals.json'
@@ -94,16 +88,25 @@ class DataSetupManager:
         }
     
     def create_directory_structure(self):
-        """Create necessary directories."""
-        directories = [
-            self.base_path / 'raw',
-            self.base_path / 'csv', 
-            self.base_path / 'output'
-        ]
+        """Create empty directories and files for manual data input."""
+        # Create directories
+        raw_dir = self.base_path / 'raw'
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        print(f"📁 Created: {raw_dir}")
         
-        for directory in directories:
-            directory.mkdir(parents=True, exist_ok=True)
-            print(f"📁 Created: {directory}")
+        # Create empty files for user to fill
+        dk_file = raw_dir / f"dk_{self.pid}.json"
+        newsletter_file = raw_dir / "newsletter_signals.json"
+        
+        # Create empty JSON file
+        if not dk_file.exists():
+            dk_file.write_text("{}")
+            print(f"📄 Created empty: {dk_file}")
+        
+        # Create empty newsletter file
+        if not newsletter_file.exists():
+            newsletter_file.write_text("{}")
+            print(f"📄 Created empty: {newsletter_file}")
     
     def display_data_sources(self):
         """Display data source URLs and instructions."""
@@ -116,12 +119,23 @@ class DataSetupManager:
         print("=" * 60)
         
         for i, source in enumerate(config['data_sources'], 1):
-            url = source['url_template'].format(pid=self.pid)
+            # Get sport and site IDs for URL template
+            sport_id = config.get('linestar_sport_id', '')
+            site_id = config.get('site_ids', {}).get(self.site, 1)  # Default to DraftKings
+            
+            # Substitute all template variables
+            filename = source['file'].replace('{pid}', self.pid)
+            url = source['url_template'].format(
+                pid=self.pid, 
+                sport_id=sport_id, 
+                site_id=site_id
+            )
+            
             print(f"\n{i}. {source['name']}")
-            print(f"   📄 File: {source['file']}")  
+            print(f"   📄 File: {filename}")  
             print(f"   📝 Description: {source['description']}")
             print(f"   🔗 URL: {url}")
-            print(f"   💾 Save to: {self.base_path}/raw/{source['file']}")
+            print(f"   💾 Save to: {self.base_path}/raw/{filename}")
         
         # Newsletter signals file
         newsletter_path = self.base_path / 'raw' / config['newsletter_file']
@@ -176,12 +190,14 @@ class DataSetupManager:
         found_files = []
         
         for source in config.get('data_sources', []):
-            file_path = raw_path / source['file']
+            # Substitute {pid} in filename
+            filename = source['file'].replace('{pid}', self.pid)
+            file_path = raw_path / filename
             if file_path.exists():
                 file_size = file_path.stat().st_size
-                found_files.append(f"✅ {source['file']} ({file_size:,} bytes)")
+                found_files.append(f"✅ {filename} ({file_size:,} bytes)")
             else:
-                missing_files.append(f"❌ {source['file']}")
+                missing_files.append(f"❌ {filename}")
         
         # Check newsletter file (optional)
         newsletter_file = config.get('newsletter_file', '')
@@ -230,6 +246,9 @@ def main():
                        help='Sport to set up data for')
     parser.add_argument('--pid', type=str, required=True,
                        help='Contest/event identifier (e.g., 466 for UFC 466)')
+    parser.add_argument('--site', type=str, default='dk',
+                       choices=['dk', 'fd'],
+                       help='DFS site: dk=DraftKings, fd=FanDuel (default: dk)')
     parser.add_argument('--validate-only', action='store_true',
                        help='Only validate existing files, skip setup')
     parser.add_argument('--create-newsletter', action='store_true',
@@ -241,10 +260,11 @@ def main():
     print("=" * 60)
     print(f"Sport: {args.sport.upper()}")
     print(f"PID: {args.pid}")
+    print(f"Site: {args.site.upper()}")
     print("=" * 60)
     
     try:
-        manager = DataSetupManager(args.sport, args.pid)
+        manager = DataSetupManager(args.sport, args.pid, args.site)
         
         if args.validate_only:
             # Just validate existing files

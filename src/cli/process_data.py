@@ -33,10 +33,11 @@ from src.models.player import Player, Position
 class BaseDataProcessor(ABC):
     """Abstract base class for sport-specific data processing."""
     
-    def __init__(self, sport: str, pid: str):
+    def __init__(self, sport: str, pid: str, site: str = 'dk'):
         self.sport = sport.lower()
         self.pid = pid
-        self.base_path = Path(f"data/{self.sport}/{self.pid}")
+        self.site = site.lower()
+        self.base_path = Path(f"data/{self.sport}/{self.site}/{self.pid}")
         self.raw_path = self.base_path / 'raw'
         self.csv_path = self.base_path / 'csv'
         
@@ -58,19 +59,137 @@ class BaseDataProcessor(ABC):
         """Extract position from raw data."""
         pass
     
-    def load_newsletter_signals(self) -> Dict[str, Any]:
-        """Load newsletter signals if available."""
-        newsletter_files = ['newsletter_signals.json', 'signals.json', 'newsletter.json']
+    def parse_newsletter_with_llm(self) -> Dict[str, Any]:
+        """Parse newsletter content using LLM and create structured signals JSON."""
+        # Look for raw newsletter files
+        newsletter_files = ['newsletter_signals.json', 'newsletter.json', 'newsletter.txt', 'signals.txt']
+        newsletter_content = None
+        newsletter_file = None
         
         for filename in newsletter_files:
-            newsletter_path = self.raw_path / filename
-            if newsletter_path.exists():
-                print(f"📰 Loading newsletter signals: {newsletter_path}")
-                with open(newsletter_path, 'r') as f:
-                    return json.load(f)
+            file_path = self.raw_path / filename
+            if file_path.exists():
+                newsletter_file = file_path
+                break
         
-        print("📰 No newsletter signals found (using neutral)")
-        return {'targets': [], 'fades': [], 'volatile': []}
+        if not newsletter_file:
+            print("📰 No newsletter file found - creating empty signals")
+            return {'targets': [], 'fades': [], 'volatile': []}
+        
+        print(f"📰 Processing newsletter: {newsletter_file}")
+        
+        # Read newsletter content
+        with open(newsletter_file, 'r') as f:
+            if newsletter_file.suffix == '.json':
+                # If already JSON, check if it needs LLM processing
+                newsletter_data = json.load(f)
+                if 'targets' in newsletter_data and 'fades' in newsletter_data:
+                    print("📰 Newsletter already in structured format")
+                    return newsletter_data
+                else:
+                    # JSON but unstructured - convert to text for LLM processing
+                    newsletter_content = json.dumps(newsletter_data, indent=2)
+            else:
+                # Plain text content
+                newsletter_content = f.read()
+        
+        if not newsletter_content:
+            return {'targets': [], 'fades': [], 'volatile': []}
+        
+        # Use LLM to parse unstructured newsletter into structured signals
+        print("📰 Using LLM to parse newsletter content...")
+        try:
+            # This is a placeholder for LLM integration
+            # In a real implementation, this would call an LLM service
+            parsed_signals = self._simulate_llm_newsletter_parsing(newsletter_content)
+            
+            # Save parsed signals as JSON for future use
+            signals_output_path = self.raw_path / 'parsed_newsletter_signals.json'
+            with open(signals_output_path, 'w') as f:
+                json.dump(parsed_signals, f, indent=2)
+            
+            print(f"📰 Saved parsed signals to: {signals_output_path}")
+            return parsed_signals
+            
+        except Exception as e:
+            print(f"⚠️ LLM newsletter parsing failed: {e}")
+            print("📰 Using manual newsletter format fallback")
+            return self._try_manual_newsletter_format(newsletter_content)
+    
+    def _simulate_llm_newsletter_parsing(self, content: str) -> Dict[str, Any]:
+        """Simulate LLM parsing of newsletter content (placeholder implementation)."""
+        # This is a placeholder that attempts to extract player mentions
+        # In a real implementation, this would use an actual LLM service
+        
+        import re
+        
+        # Simple pattern matching for common newsletter language
+        targets = []
+        fades = []
+        volatile = []
+        
+        lines = content.split('\n')
+        
+        for line in lines:
+            line_lower = line.lower()
+            
+            # Look for target indicators
+            if any(indicator in line_lower for indicator in ['target', 'like', 'love', 'play', 'favorite']):
+                # Extract player names (basic regex)
+                names = re.findall(r'\b[A-Z][a-z]+ [A-Z][a-z]+\b', line)
+                for name in names:
+                    targets.append({
+                        'name': name,
+                        'confidence': 0.7,
+                        'reason': line.strip()[:100]
+                    })
+            
+            # Look for fade indicators  
+            elif any(indicator in line_lower for indicator in ['fade', 'avoid', 'stay away', 'pass on']):
+                names = re.findall(r'\b[A-Z][a-z]+ [A-Z][a-z]+\b', line)
+                for name in names:
+                    fades.append({
+                        'name': name,
+                        'confidence': 0.6,
+                        'reason': line.strip()[:100]
+                    })
+            
+            # Look for volatile indicators
+            elif any(indicator in line_lower for indicator in ['boom', 'bust', 'risky', 'upside', 'ceiling']):
+                names = re.findall(r'\b[A-Z][a-z]+ [A-Z][a-z]+\b', line)
+                for name in names:
+                    volatile.append({
+                        'name': name,
+                        'confidence': 0.7,
+                        'reason': line.strip()[:100]
+                    })
+        
+        return {
+            'targets': targets,
+            'fades': fades,
+            'volatile': volatile
+        }
+    
+    def _try_manual_newsletter_format(self, content: str) -> Dict[str, Any]:
+        """Fallback to try manual newsletter JSON parsing."""
+        try:
+            # Try to parse as JSON first
+            return json.loads(content)
+        except:
+            # Return empty signals if parsing fails
+            return {'targets': [], 'fades': [], 'volatile': []}
+    
+    def load_newsletter_signals(self) -> Dict[str, Any]:
+        """Load newsletter signals, processing with LLM if needed."""
+        # First check if we already have parsed signals
+        parsed_signals_path = self.raw_path / 'parsed_newsletter_signals.json'
+        if parsed_signals_path.exists():
+            print(f"📰 Loading parsed signals: {parsed_signals_path}")
+            with open(parsed_signals_path, 'r') as f:
+                return json.load(f)
+        
+        # Otherwise parse newsletter content with LLM
+        return self.parse_newsletter_with_llm()
     
     def apply_newsletter_signals(self, df: pd.DataFrame) -> pd.DataFrame:
         """Apply newsletter signals to player data."""
@@ -247,37 +366,78 @@ class MMADataProcessor(BaseDataProcessor):
     """MMA-specific data processor."""
     
     def load_raw_data(self) -> pd.DataFrame:
-        """Load MMA raw data files."""
-        # For now, assume we have the existing CSV format
-        # In a real implementation, this would combine multiple sources
-        csv_files = list(self.raw_path.glob("*.csv"))
-        if not csv_files:
-            raise FileNotFoundError(f"No CSV files found in {self.raw_path}")
+        """Load and parse MMA JSON data into standardized CSV format."""
+        json_files = list(self.raw_path.glob("*.json"))
+        main_json_file = None
         
-        # Use the first CSV file found (in real implementation, would merge multiple)
-        main_file = csv_files[0]
-        print(f"   📄 Loading: {main_file}")
-        df = pd.read_csv(main_file)
+        # Look for main data file (dk_pid.json or fd_pid.json)  
+        for json_file in json_files:
+            if json_file.name.startswith(f"{self.site}_{self.pid}") and not 'newsletter' in json_file.name.lower():
+                main_json_file = json_file
+                break
         
-        # Standardize column names
-        column_mapping = {
-            'player_id': 'player_id',
-            'name': 'name', 
-            'salary': 'salary',
-            'updated_projection': 'projection',
-            'updated_floor': 'floor',
-            'updated_ceiling': 'ceiling',
-            'updated_ownership': 'ownership',
-            'std_dev': 'std_dev'
-        }
+        if not main_json_file:
+            raise FileNotFoundError(f"No main JSON file found matching {self.site}_{self.pid}.json in {self.raw_path}")
         
-        # Rename columns to standard format
-        df = df.rename(columns={k: v for k, v in column_mapping.items() if k in df.columns})
+        print(f"   📄 Loading JSON: {main_json_file}")
         
-        # Fill missing values
-        df['std_dev'] = df.get('std_dev', 25.0)
-        df['ownership'] = df.get('ownership', 10.0)
+        with open(main_json_file, 'r') as f:
+            data = json.load(f)
         
+        # Extract salary data from SalaryContainerJson (MMA-specific parsing)
+        salary_data = json.loads(data['SalaryContainerJson'])
+        players = []
+        
+        for player_data in salary_data['Salaries']:
+            player_id = player_data['PID']
+            player = {
+                'player_id': player_id,
+                'name': player_data['Name'],
+                'salary': player_data['Salary'],
+                'projection': player_data.get('AvgPointsPerGame', 0.0),
+                'floor': player_data.get('FloorPointsPerGame', 0.0), 
+                'ceiling': player_data.get('CeilingPointsPerGame', 0.0),
+                'ownership': player_data.get('PercentOwned', 10.0),
+                'std_dev': 25.0  # Default variance for MMA
+            }
+            players.append(player)
+        
+        # Create base dataframe
+        df = pd.DataFrame(players)
+        
+        # Extract ML odds and additional data from MatchupData (MMA-specific)
+        ml_odds_map = {}
+        win_pct_map = {}
+        itd_odds_map = {}
+        
+        for table in data.get('MatchupData', []):
+            if table.get('Name') == 'Fight':
+                columns = table['Columns']
+                for match in table.get('PlayerMatchups', []):
+                    player_id = match['PlayerId']
+                    values = match['Values']
+                    
+                    # Map columns to values
+                    col_data = dict(zip(columns, values))
+                    
+                    # Extract ML odds (Vegas Odds column)
+                    if 'Vegas Odds' in col_data:
+                        ml_odds_map[player_id] = float(col_data['Vegas Odds']) if col_data['Vegas Odds'] != '0' else 0
+                    
+                    # Extract win percentage
+                    if 'Win Pct' in col_data:
+                        win_pct_map[player_id] = float(col_data['Win Pct']) if col_data['Win Pct'] != '0' else 0
+                    
+                    # Extract full fight odds (ITD odds)
+                    if 'Full Fight Odds' in col_data:
+                        itd_odds_map[player_id] = float(col_data['Full Fight Odds']) if col_data['Full Fight Odds'] != '0' else 0
+        
+        # Add ML odds and win data to dataframe
+        df['ml_odds'] = df['player_id'].map(ml_odds_map).fillna(0)
+        df['win_pct'] = df['player_id'].map(win_pct_map).fillna(0)
+        df['itd_odds'] = df['player_id'].map(itd_odds_map).fillna(0)
+        
+        print(f"   ✅ Parsed {len(df)} fighters from JSON")
         return df
     
     def calculate_sport_metrics(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -306,7 +466,7 @@ class MMADataProcessor(BaseDataProcessor):
         return Position.FIGHTER
 
 
-def create_processor(sport: str, pid: str) -> BaseDataProcessor:
+def create_processor(sport: str, pid: str, site: str = 'dk') -> BaseDataProcessor:
     """Factory function to create sport-specific processor."""
     processors = {
         'mma': MMADataProcessor,
@@ -318,7 +478,7 @@ def create_processor(sport: str, pid: str) -> BaseDataProcessor:
     if not processor_class:
         raise ValueError(f"Sport '{sport}' not yet supported")
     
-    return processor_class(sport, pid)
+    return processor_class(sport, pid, site)
 
 
 def main():
@@ -333,6 +493,9 @@ def main():
                        help='Sport to process data for')
     parser.add_argument('--pid', type=str, required=True,
                        help='Contest/event identifier')
+    parser.add_argument('--site', type=str, default='dk',
+                       choices=['dk', 'fd'],
+                       help='DFS site: dk=DraftKings, fd=FanDuel (default: dk)')
     parser.add_argument('--summary-only', action='store_true',
                        help='Only display data summary, skip processing')
     
@@ -342,10 +505,11 @@ def main():
     print("=" * 60)
     print(f"Sport: {args.sport.upper()}")
     print(f"PID: {args.pid}")
+    print(f"Site: {args.site.upper()}")
     print("=" * 60)
     
     try:
-        processor = create_processor(args.sport, args.pid)
+        processor = create_processor(args.sport, args.pid, args.site)
         
         if args.summary_only:
             # Load existing processed data and show summary

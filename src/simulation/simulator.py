@@ -7,7 +7,6 @@ import logging
 
 from ..models.player import Player
 from ..models.lineup import Lineup
-from ..models.contest import Contest
 from .variance_model import VarianceModel
 
 logger = logging.getLogger(__name__)
@@ -223,47 +222,6 @@ class Simulator:
         
         return placement, percentile
     
-    def calculate_lineup_ev(self, result: SimulationResult, 
-                           contest: Contest,
-                           field_scores: Optional[np.ndarray] = None) -> float:
-        """
-        Calculate expected value of a lineup in a contest.
-        
-        Args:
-            result: Simulation result for lineup
-            contest: Contest to evaluate
-            field_scores: Optional field scores for placement
-            
-        Returns:
-            Expected value in dollars
-        """
-        if field_scores is None:
-            # Use percentiles to estimate cash probability
-            cash_percentile = 100 - contest.cash_line
-            cash_probability = np.sum(
-                result.scores >= result.get_percentile(cash_percentile)
-            ) / len(result.scores)
-            
-            # Estimate win probability (top 1%)
-            win_probability = np.sum(
-                result.scores >= result.get_percentile(99)
-            ) / len(result.scores)
-        else:
-            # Calculate actual placement probabilities
-            cash_count = 0
-            win_count = 0
-            
-            for score in result.scores:
-                placement, _ = self.simulate_contest_placement(score, field_scores)
-                if placement <= contest.places_paid:
-                    cash_count += 1
-                if placement == 1:
-                    win_count += 1
-            
-            cash_probability = cash_count / len(result.scores)
-            win_probability = win_count / len(result.scores)
-        
-        return contest.expected_value(win_probability, cash_probability)
     
     def find_optimal_lineup_score(self, result: SimulationResult,
                                  target_percentile: int = 97) -> float:

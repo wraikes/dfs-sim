@@ -124,143 +124,87 @@ class MMAFieldGenerator(BaseFieldGenerator):
         
         return [available[i] for i in selected_indices]
     
-    def generate_chalk_lineup(self) -> FieldLineup:
-        """Generate a typical chalk-heavy lineup that most opponents will play."""
+    def _generate_lineup_by_strategy(self, strategy: str) -> FieldLineup:
+        """Generate a lineup based on ownership strategy.
+        
+        Args:
+            strategy: 'chalk', 'balanced', or 'contrarian'
+        """
         lineup = []
         used_ids = set()
-        attempts = 0
         max_attempts = 100
         
+        # Define strategy-specific ownership targets
+        if strategy == 'chalk':
+            # Chalk: 3-4 chalk/popular, 1-2 moderate/contrarian
+            ownership_pools = [
+                (self.chalk + self.popular, 0.7),  # 70% from high ownership
+                (self.moderate + self.contrarian, 0.3)  # 30% from lower ownership
+            ]
+        elif strategy == 'balanced':  
+            # Balanced: Mix across all ownership levels
+            ownership_pools = [
+                (self.chalk + self.popular, 0.33),
+                (self.moderate, 0.33),
+                (self.contrarian + self.leverage, 0.34)
+            ]
+        elif strategy == 'contrarian':
+            # Contrarian: Mostly low ownership with some mid-tier
+            ownership_pools = [
+                (self.leverage + self.contrarian, 0.67),  # 67% low ownership
+                (self.moderate + self.popular, 0.33)  # 33% mid-tier
+            ]
+        else:
+            raise ValueError(f"Unknown strategy: {strategy}")
+        
+        # Build lineup based on ownership distribution
+        attempts = 0
         while len(lineup) < 6 and attempts < max_attempts:
             attempts += 1
             
-            # Chalk lineups: 3-4 chalk, 1-2 popular, 0-1 contrarian
-            remaining = 6 - len(lineup)
-            
-            if remaining >= 4 and len(lineup) < 3:
-                # Add chalk plays
-                candidates = [p for p in self.chalk if p.player_id not in used_ids]
+            # Select from appropriate pool based on strategy
+            for pool, weight in ownership_pools:
+                remaining = 6 - len(lineup)
+                target_from_pool = int(remaining * weight) + (1 if remaining * weight % 1 > 0.5 else 0)
+                target_from_pool = max(1, min(target_from_pool, remaining))
+                
+                candidates = [p for p in pool if p.player_id not in used_ids]
                 if candidates:
                     selected = self._select_by_ownership_probability(candidates, 1)
                     if selected:
-                        fighter = selected[0]
-                        if not self._has_opponents(lineup + [fighter]):
-                            lineup.append(fighter)
-                            used_ids.add(fighter.player_id)
-            
-            elif remaining >= 2 and len(lineup) < 5:
-                # Add popular plays
-                candidates = [p for p in self.popular + self.moderate if p.player_id not in used_ids]
-                if candidates:
-                    selected = self._select_by_ownership_probability(candidates, 1)
-                    if selected:
-                        fighter = selected[0]
-                        if not self._has_opponents(lineup + [fighter]):
-                            lineup.append(fighter)
-                            used_ids.add(fighter.player_id)
-            
-            else:
-                # Fill with any valid fighter
-                candidates = [p for p in self.players if p.player_id not in used_ids]
-                if candidates:
-                    selected = random.choice(candidates)
-                    if not self._has_opponents(lineup + [selected]):
-                        lineup.append(selected)
-                        used_ids.add(selected.player_id)
-        
-        # If we couldn't build a full lineup, fill with random valid fighters
-        if len(lineup) < 6:
-            candidates = [p for p in self.players if p.player_id not in used_ids]
-            for fighter in candidates:
+                        player = selected[0] 
+                        if not self._has_invalid_combinations(lineup + [player]):
+                            lineup.append(player)
+                            used_ids.add(player.player_id)
+                            break
+                            
                 if len(lineup) >= 6:
                     break
-                if not self._has_opponents(lineup + [fighter]):
-                    lineup.append(fighter)
-                    if len(lineup) == 6:
-                        break
         
-        return FieldLineup(fighters=lineup[:6])
+        # Fill remaining spots with any valid players
+        while len(lineup) < 6:
+            candidates = [p for p in self.players if p.player_id not in used_ids]
+            if not candidates:
+                break
+            
+            player = random.choice(candidates)
+            if not self._has_invalid_combinations(lineup + [player]):
+                lineup.append(player)
+                used_ids.add(player.player_id)
+        
+        return FieldLineup(players=lineup[:6])
+    
+    def generate_chalk_lineup(self) -> FieldLineup:
+        """Generate a typical chalk-heavy lineup that most opponents will play."""
+        return self._generate_lineup_by_strategy('chalk')
     
     def generate_balanced_lineup(self) -> FieldLineup:
         """Generate a balanced lineup with mix of ownership levels."""
-        lineup = []
-        used_ids = set()
-        
-        # Target composition: 2 chalk/popular, 2 moderate, 2 contrarian/leverage
-        ownership_targets = [
-            (self.chalk + self.popular, 2),
-            (self.moderate, 2),
-            (self.contrarian + self.leverage, 2)
-        ]
-        
-        for pool, target_count in ownership_targets:
-            candidates = [p for p in pool if p.player_id not in used_ids]
-            
-            added = 0
-            for _ in range(target_count):
-                if not candidates:
-                    break
-                    
-                selected = self._select_by_ownership_probability(candidates, 1)
-                if selected:
-                    fighter = selected[0]
-                    if not self._has_opponents(lineup + [fighter]):
-                        lineup.append(fighter)
-                        used_ids.add(fighter.player_id)
-                        candidates.remove(fighter)
-                        added += 1
-        
-        # Fill remaining spots
-        while len(lineup) < 6:
-            candidates = [p for p in self.players if p.player_id not in used_ids]
-            if not candidates:
-                break
-            
-            fighter = random.choice(candidates)
-            if not self._has_opponents(lineup + [fighter]):
-                lineup.append(fighter)
-                used_ids.add(fighter.player_id)
-        
-        return FieldLineup(fighters=lineup[:6])
+        return self._generate_lineup_by_strategy('balanced')
     
     def generate_contrarian_lineup(self) -> FieldLineup:
         """Generate a contrarian lineup with mostly low-owned plays."""
-        lineup = []
-        used_ids = set()
-        
-        # Contrarian: 0-1 chalk, 1-2 moderate, 3-4 contrarian/leverage
-        pools_priority = [
-            (self.leverage, 2),
-            (self.contrarian, 2),
-            (self.moderate, 1),
-            (self.popular, 1)
-        ]
-        
-        for pool, target in pools_priority:
-            candidates = [p for p in pool if p.player_id not in used_ids]
-            
-            for _ in range(target):
-                if not candidates or len(lineup) >= 6:
-                    break
-                    
-                fighter = random.choice(candidates)
-                if not self._has_opponents(lineup + [fighter]):
-                    lineup.append(fighter)
-                    used_ids.add(fighter.player_id)
-                    candidates.remove(fighter)
-        
-        # Fill remaining
-        while len(lineup) < 6:
-            candidates = [p for p in self.players if p.player_id not in used_ids]
-            if not candidates:
-                break
-                
-            fighter = self._select_by_ownership_probability(candidates, 1)[0]
-            if not self._has_opponents(lineup + [fighter]):
-                lineup.append(fighter)
-                used_ids.add(fighter.player_id)
-        
-        return FieldLineup(fighters=lineup[:6])
+        return self._generate_lineup_by_strategy('contrarian')
     
     def generate_field(self, n_lineups: int = 10000) -> List[FieldLineup]:
         """Generate a realistic field of opponent lineups.
@@ -325,11 +269,11 @@ class MMAFieldGenerator(BaseFieldGenerator):
         if not field:
             return 1.0
         
-        lineup_fighters = lineup.get_fighter_ids()
+        lineup_fighters = lineup.get_player_ids()
         overlap_scores = []
         
         for field_lineup in field:
-            field_fighters = field_lineup.get_fighter_ids()
+            field_fighters = field_lineup.get_player_ids()
             overlap = len(lineup_fighters & field_fighters) / 6.0
             overlap_scores.append(overlap)
         
@@ -348,10 +292,10 @@ class MMAFieldGenerator(BaseFieldGenerator):
         Returns list of (lineup, similarity_score) tuples where similarity > threshold.
         """
         similar = []
-        lineup_fighters = lineup.get_fighter_ids()
+        lineup_fighters = lineup.get_player_ids()
         
         for field_lineup in field:
-            field_fighters = field_lineup.get_fighter_ids()
+            field_fighters = field_lineup.get_player_ids()
             overlap = len(lineup_fighters & field_fighters) / 6.0
             
             if overlap >= threshold:

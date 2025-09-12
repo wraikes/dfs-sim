@@ -9,12 +9,59 @@ This is a Daily Fantasy Sports (DFS) lineup optimizer designed for tournament pl
 ## Core Architecture
 
 ### Data Flow
-1. **JSON Input** → Manual data collection from various sources
-2. **CSV Processing** → Standardized format for projections, salaries, ownership
-3. **Newsletter Adjustments** → Expert insights modify base projections
+1. **Manual Data Setup** → Create directories and empty files for data input
+2. **Sport-Specific JSON Parsing** → Extract raw JSON data into standardized CSV format  
+3. **LLM Newsletter Processing** → Parse newsletter insights into JSON signals, modify CSV in-place
 4. **Monte Carlo Engine** → 25,000+ simulations with variance modeling
 5. **Field Generation** → Model opponent lineups for uniqueness scoring
 6. **Optimization** → Select lineups optimizing for tail outcomes (95th-99th percentile)
+
+### CLI Pipeline Workflow
+
+The complete data processing pipeline follows this exact sequence:
+
+```bash
+# Step 1: Setup data directories and provide URLs for manual data collection
+python src/cli/setup_data.py --sport mma --pid 466 --site dk
+# → Creates: data/mma/dk/466/raw/ with empty JSON files
+# → Provides URLs for LineStar, newsletter data sources
+
+# Step 2: Manual data input (copy/paste JSON data into empty files)
+# → User pastes contest JSON into data/mma/dk/466/raw/dk_466.json  
+# → User pastes newsletter into data/mma/dk/466/raw/newsletter_signals.json
+
+# Step 3: Process raw data (JSON → CSV → Newsletter → Modified CSV)
+python src/cli/process_data.py --sport mma --pid 466 --site dk
+# → Extracts JSON salary/projection data into standardized CSV format
+# → Uses LLM to parse newsletter text into structured JSON signals
+# → Applies newsletter adjustments to modify CSV projections in-place
+# → Outputs: data/mma/dk/466/csv/dk_466_extracted.csv
+
+# Step 4: Generate optimized lineups
+python src/cli/optimize.py --sport mma --pid 466 --site dk --entries 20
+# → Loads processed CSV data
+# → Runs Monte Carlo simulations with correlation matrix
+# → Generates field of opponent lineups for uniqueness scoring  
+# → Outputs optimal lineups: data/mma/dk/466/output/lineups_466.csv
+```
+
+#### Data Processing Components
+
+**Sport-Specific JSON Extraction:**
+- MMA: Parses LineStar JSON format (`SalaryContainerJson`, `MatchupData`)
+- NFL: Will parse DraftKings/FanDuel contest JSON (future implementation)
+- NBA: Will parse projection service JSON format (future implementation)
+
+**LLM Newsletter Processing:**
+- Parses unstructured newsletter text using AI language model
+- Extracts targets, fades, volatile players with confidence scores
+- Creates structured JSON: `{"targets": [...], "fades": [...], "volatile": [...]}`
+- Applies projection multipliers: targets (+15-35%), fades (-15-30%), volatile (ceiling +10-25%)
+
+**CSV Modification Pipeline:**
+- Base CSV: player_id, name, salary, projection, floor, ceiling, ownership
+- Newsletter signals applied: updated_projection, updated_ceiling, updated_ownership  
+- Final output: Fully processed CSV ready for simulation/optimization
 
 ### Key Technical Components
 
