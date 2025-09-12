@@ -55,12 +55,17 @@ class MMACorrelationBuilder(BaseCorrelationBuilder):
             if not opponent_name:
                 continue
                 
-            # Find opponent
+            # Find opponent (try exact match first, then partial match)
             for j, player2 in enumerate(self.players):
-                if i != j and player2.name.upper().split()[-1] == opponent_name:
-                    matrix[i][j] = -0.85  # Strong negative
-                    matrix[j][i] = -0.85
-                    break
+                if i != j:
+                    player2_name = player2.name.upper()
+                    # Try exact match, last name match, or if opponent name is in player name
+                    if (opponent_name == player2_name or 
+                        opponent_name == player2_name.split()[-1] or
+                        opponent_name in player2_name):
+                        matrix[i][j] = -0.85  # Strong negative
+                        matrix[j][i] = -0.85
+                        break
         
         # 2. Favorites correlation (similar ML favorites often win together)
         for i, player1 in enumerate(self.players):
@@ -130,19 +135,23 @@ class MMACorrelationBuilder(BaseCorrelationBuilder):
             
             # Find opponent
             for player2 in self.players:
-                if (player2.player_id not in processed and 
-                    player2.name.upper().split()[-1] == opponent_name):
-                    
-                    rules.append(CorrelationRule(
-                        player1_id=player1.player_id,
-                        player2_id=player2.player_id,
-                        correlation=-0.8,
-                        rule_type='opponent'
-                    ))
-                    
-                    processed.add(player1.player_id)
-                    processed.add(player2.player_id)
-                    break
+                if player2.player_id not in processed:
+                    player2_name = player2.name.upper()
+                    # Try exact match, last name match, or if opponent name is in player name
+                    if (opponent_name == player2_name or 
+                        opponent_name == player2_name.split()[-1] or
+                        opponent_name in player2_name):
+                        
+                        rules.append(CorrelationRule(
+                            player1_id=player1.player_id,
+                            player2_id=player2.player_id,
+                            correlation=-0.8,
+                            rule_type='opponent'
+                        ))
+                        
+                        processed.add(player1.player_id)
+                        processed.add(player2.player_id)
+                        break
         
         return rules
 
