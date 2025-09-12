@@ -30,6 +30,12 @@ This is a Daily Fantasy Sports (DFS) lineup optimizer designed for tournament pl
 - **Game stacks**: Multiple players from same game
 - **Leverage plays**: Low-owned alternatives to chalk
 
+##### MMA-Specific Correlations
+- **Perfect negative correlation**: Direct opponents cannot both score (-0.8 to -1.0)
+- **Strict constraint**: Never roster fighters from both sides of the same fight
+- **ITD correlation**: Finishing potential affects lineup construction
+- **Ownership anti-correlation**: Chalk vs contrarian fighter selection
+
 #### Optimization Approach
 - Not traditional linear programming (which optimizes for mean)
 - Instead: simulation-based optimization for high-variance outcomes
@@ -128,6 +134,26 @@ python -m dfs-sim.cli backtest --start 2023-09-01 --end 2024-01-01
 - Ownership projection methodologies
 - Tournament game theory concepts
 - Sports-specific variance studies
+
+### Sport Configuration Reference
+
+See `/archive/rules/sport_rules.py` for comprehensive sport-specific rules including:
+
+#### MMA Configuration
+- **Roster**: 6 fighters, $50K salary cap
+- **Core constraint**: Never roster opponents from same fight
+- **Composition strategy**: 2 favorites (≤-250 ML) + 2 mid-tier + 1-2 live dogs (+120 to +300)
+- **Ownership targets**: ≥2 ≤20% owned, ≥1 ≤10% owned, cap total ≤140%
+- **Ceiling formula**: `adj_ceil = CEIL * (1 - 0.20 * ownership) * (1 + 0.4 * ITD_prob)`
+- **Key factors**: ITD (Inside The Distance) finishing potential, grappling control, volatility
+
+#### Other Sports
+- **NFL**: Stacking rules (QB + pass-catchers), correlation constraints
+- **NBA**: Minutes ceiling focus, negative correlation avoidance  
+- **MLB**: Hitter stacking (4-4, 5-3), pitcher vs stack rules
+- **NHL**: Line stacks, PP1 correlation, goalie constraints
+- **NASCAR**: Dominator strategy, position/PD balance, team limits
+- **PGA**: Ceiling-first approach, wave correlation, ownership leverage
 
 ## Questions to Ask When Implementing Features
 

@@ -144,19 +144,61 @@ class Simulator:
         return lineup_scores
     
     def _simulate_correlated(self, players: List[Player]) -> np.ndarray:
-        """Simulate players with correlation matrix."""
+        """Simulate players with correlation matrix using Cholesky decomposition."""
         n_players = len(players)
         
-        # Get player indices in correlation matrix
-        player_indices = []
-        for player in players:
-            # This would need a mapping of player_id to matrix index
-            # For now, simulate independently
-            pass
+        # Generate independent simulations for each player
+        player_sims = np.zeros((n_players, self.n_simulations))
         
-        # TODO: Implement correlated simulation using Cholesky decomposition
-        logger.warning("Correlation matrix provided but not yet implemented")
-        return self._simulate_independent(players)
+        for i, player in enumerate(players):
+            scores = self.simulate_player(player)
+            # Standardize scores to N(0,1) for correlation transformation
+            mean_score = np.mean(scores)
+            std_score = np.std(scores) if np.std(scores) > 0 else 1.0
+            player_sims[i] = (scores - mean_score) / std_score
+        
+        # Apply correlation if matrix is provided and matches player count
+        if (self.correlation_matrix is not None and 
+            self.correlation_matrix.shape[0] >= n_players):
+            
+            # Extract relevant submatrix for these players
+            corr_submatrix = self.correlation_matrix[:n_players, :n_players]
+            
+            # Ensure matrix is positive semi-definite
+            eigenvals = np.linalg.eigvals(corr_submatrix)
+            if np.min(eigenvals) < -1e-8:
+                # Fix by adding small value to diagonal
+                corr_submatrix += np.eye(n_players) * (abs(np.min(eigenvals)) + 1e-6)
+            
+            try:
+                # Cholesky decomposition
+                L = np.linalg.cholesky(corr_submatrix)
+                
+                # Transform independent samples to correlated
+                correlated_sims = L @ player_sims
+                
+                # Transform back to original scale
+                for i, player in enumerate(players):
+                    original_scores = self.simulate_player(player)
+                    mean_score = np.mean(original_scores) 
+                    std_score = np.std(original_scores) if np.std(original_scores) > 0 else 1.0
+                    player_sims[i] = correlated_sims[i] * std_score + mean_score
+                    
+            except np.linalg.LinAlgError:
+                logger.warning("Cholesky decomposition failed, using independent simulation")
+                # Fall back to original independent simulations
+                for i, player in enumerate(players):
+                    original_scores = self.simulate_player(player)
+                    player_sims[i] = original_scores
+        else:
+            # No valid correlation matrix, convert back to original scale
+            for i, player in enumerate(players):
+                original_scores = self.simulate_player(player) 
+                player_sims[i] = original_scores
+        
+        # Sum player scores for lineup totals
+        lineup_scores = np.sum(player_sims, axis=0)
+        return lineup_scores
     
     def simulate_contest_placement(self, lineup_score: float, 
                                   field_scores: np.ndarray) -> Tuple[int, float]:

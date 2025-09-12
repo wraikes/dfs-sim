@@ -149,8 +149,8 @@ EXTRACTION RULES:
    - Mild mention/balanced view ("could work", "maybe"): 0.3-0.4
 
 3. Base delta directions by signal type:
-   - POSITIVE (target): ceiling_delta = +0.06 * confidence, ownership_delta = -0.08 * confidence  
-   - NEGATIVE (avoid): ceiling_delta = -0.06 * confidence, ownership_delta = +0.08 * confidence
+   - POSITIVE (target): ceiling_delta = +0.15 * confidence, ownership_delta = -0.12 * confidence  
+   - NEGATIVE (avoid): ceiling_delta = -0.15 * confidence, ownership_delta = +0.12 * confidence
 
 4. Sport context for {self.sport.upper()}:
    - Positions: {context.get('position_types', ['Player'])}
@@ -172,13 +172,13 @@ Focus on extracting actionable DFS signals, not general game analysis.'''
             confidence = max(0.0, min(1.0, float(p.get('confidence', 0.5))))
             signal_type = p.get('signal', 'neutral').lower()
             
-            # Calculate deltas based on confidence and signal type
+            # Calculate deltas based on confidence and signal type (aggressive weighting)
             if signal_type == 'target':
-                ceiling_delta = 0.06 * confidence  # Max +0.054 at 0.9 confidence
-                ownership_delta = -0.08 * confidence  # Max -0.072 at 0.9 confidence  
+                ceiling_delta = 0.15 * confidence  # Max +0.135 at 0.9 confidence
+                ownership_delta = -0.12 * confidence  # Max -0.108 at 0.9 confidence  
             elif signal_type == 'avoid':
-                ceiling_delta = -0.06 * confidence  # Max -0.054 at 0.9 confidence
-                ownership_delta = 0.08 * confidence  # Max +0.072 at 0.9 confidence
+                ceiling_delta = -0.15 * confidence  # Max -0.135 at 0.9 confidence
+                ownership_delta = 0.12 * confidence  # Max +0.108 at 0.9 confidence
             else:
                 ceiling_delta = 0.0
                 ownership_delta = 0.0
@@ -253,11 +253,11 @@ Focus on extracting actionable DFS signals, not general game analysis.'''
                     new_ownership = max(0, min(100, player.ownership + (signal.ownership_delta * 100)))
                     player.ownership = new_ownership
                 
-                # Apply target/fade multipliers
+                # Apply target/fade multipliers (aggressive weighting)
                 if signal.signal == 'target':
-                    player.target_multiplier = 1.0 + (signal.confidence * 0.2)  # Up to 20% boost
+                    player.target_multiplier = 1.0 + (signal.confidence * 0.4)  # Up to 40% boost
                 elif signal.signal == 'avoid':
-                    player.fade_multiplier = 1.0 - (signal.confidence * 0.2)  # Up to 20% reduction
+                    player.fade_multiplier = 1.0 - (signal.confidence * 0.4)  # Up to 40% reduction
                 
                 # Mark as volatile if high confidence target (affects std_dev)
                 if signal.signal == 'target' and signal.confidence > 0.7:

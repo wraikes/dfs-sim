@@ -172,7 +172,6 @@ class BaseJsonExtractor(ABC):
                 'projection': player.projection,
                 'floor': player.floor,
                 'ceiling': player.ceiling,
-                'ownership': player.ownership,
                 'std_dev': player.std_dev,
                 'value': player.value,
             }
@@ -185,16 +184,28 @@ class BaseJsonExtractor(ABC):
         # Add newsletter columns if they don't exist (for players without signals)
         newsletter_cols = ['newsletter_signal', 'newsletter_confidence', 'newsletter_reason', 
                           'ceiling_delta_applied', 'ownership_delta_applied', 
-                          'newsletter_target_mult', 'newsletter_fade_mult']
+                          'newsletter_target_mult', 'newsletter_fade_mult',
+                          'original_projection', 'projection_modifier', 'updated_projection',
+                          'original_floor', 'floor_modifier', 'updated_floor',
+                          'original_ceiling', 'ceiling_modifier', 'updated_ceiling',
+                          'original_ownership', 'ownership_modifier', 'updated_ownership']
         
         for col in newsletter_cols:
             if col not in df.columns:
                 if 'mult' in col:
                     df[col] = 1.0
-                elif 'delta' in col:
+                elif 'delta' in col or 'modifier' in col:
                     df[col] = 0.0
                 elif col == 'newsletter_confidence':
                     df[col] = 0.0
+                elif col.startswith('original_'):
+                    # Map original columns to their base fields
+                    base_field = col.replace('original_', '')
+                    df[col] = df.get(base_field, 0.0)
+                elif col.startswith('updated_'):
+                    # Updated columns default to same as base field if no signals
+                    base_field = col.replace('updated_', '')
+                    df[col] = df.get(base_field, 0.0)
                 else:
                     df[col] = 'neutral' if col == 'newsletter_signal' else ''
         
@@ -206,6 +217,23 @@ class BaseJsonExtractor(ABC):
         df['ownership_delta_applied'] = df['ownership_delta_applied'].fillna(0.0)
         df['newsletter_target_mult'] = df['newsletter_target_mult'].fillna(1.0)
         df['newsletter_fade_mult'] = df['newsletter_fade_mult'].fillna(1.0)
+        
+        # Handle transparency columns - for players without signals, original = updated
+        transparency_fields = ['projection', 'floor', 'ceiling', 'ownership']
+        
+        for field in transparency_fields:
+            original_col = f'original_{field}'
+            modifier_col = f'{field}_modifier'
+            updated_col = f'updated_{field}'
+            
+            if field in df.columns:
+                df[original_col] = df[original_col].fillna(df[field])
+                df[modifier_col] = df[modifier_col].fillna(0.0)
+                df[updated_col] = df[updated_col].fillna(df[original_col])
+            else:
+                df[original_col] = df[original_col].fillna(0.0)
+                df[modifier_col] = df[modifier_col].fillna(0.0)
+                df[updated_col] = df[updated_col].fillna(df[original_col])
         
         # Determine output path - save to /csv/ folder if JSON is in organized structure
         if output_path is None:
@@ -219,6 +247,27 @@ class BaseJsonExtractor(ABC):
             else:
                 # Fallback to same directory
                 output_path = input_path.parent / f"{input_path.stem}_extracted.csv"
+        
+        # Add MMA-specific calculated columns (after all other processing)
+        if hasattr(self, '_calculate_itd_probability'):  # MMA extractor
+            # Add ML odds column from Vegas_Odds_fight if available
+            if 'Vegas_Odds_fight' in df.columns:
+                df['ml_odds'] = df['Vegas_Odds_fight'].copy()
+            else:
+                df['ml_odds'] = 0
+            
+            # Calculate ITD-adjusted ceiling using sport_rules.py formula
+            # adj = CEIL * (1 - 0.20 * ownership) * (1 + 0.4 * ITD_prob)
+            df['itd_adjusted_ceiling'] = 0.0
+            
+            for idx, row in df.iterrows():
+                ownership_decimal = row.get('updated_ownership', row.get('ownership', 0)) / 100.0
+                itd_prob = row.get('itd_probability', 0.35)  # Default to UFC average
+                base_ceiling = row.get('updated_ceiling', row.get('ceiling', 0))
+                
+                ownership_factor = max(0, 1 - 0.20 * ownership_decimal)
+                itd_factor = 1 + 0.4 * itd_prob
+                df.at[idx, 'itd_adjusted_ceiling'] = base_ceiling * ownership_factor * itd_factor
         
         # Save CSV
         df.to_csv(output_path, index=False)
@@ -262,26 +311,57 @@ class BaseJsonExtractor(ABC):
                             ownership_delta = player_signal.get('ownership_delta', 0.0)
                             reason = player_signal.get('reason', '')
                             
-                            # Apply ceiling adjustment
-                            if ceiling_delta != 0:
-                                multiplier = 1.0 + ceiling_delta
-                                original_ceiling = player.ceiling
-                                new_ceiling = max(player.projection, original_ceiling * multiplier)
-                                player.ceiling = new_ceiling
+                            # Store original values before any modifications
+                            original_projection = player.projection
+                            original_floor = player.floor
+                            original_ceiling = player.ceiling
+                            original_ownership = player.ownership
                             
-                            # Apply ownership adjustment  
-                            if ownership_delta != 0:
-                                original_ownership = player.ownership
-                                new_ownership = max(0, min(100, original_ownership + (ownership_delta * 100)))
-                                player.ownership = new_ownership
-                            
-                            # Apply target/fade multipliers based on signal
+                            # Calculate projection modifier from newsletter signal (aggressive 20% scaling)
+                            projection_modifier = 0.0
                             if signal == 'target':
-                                target_mult = 1.0 + (confidence * 0.2)  # Up to 20% boost
+                                projection_modifier = original_projection * (confidence * 0.20)  # Up to 20% boost
+                            elif signal == 'avoid':
+                                projection_modifier = original_projection * -(confidence * 0.20)  # Up to 20% reduction
+                            
+                            # Apply projection modifier to projection, floor, AND ceiling (shift entire distribution)
+                            updated_projection = original_projection + projection_modifier
+                            updated_floor = original_floor + projection_modifier
+                            updated_ceiling = original_ceiling + projection_modifier
+                            
+                            # Update player object
+                            player.projection = updated_projection
+                            player.floor = updated_floor
+                            player.ceiling = updated_ceiling
+                            
+                            # Apply ownership adjustment
+                            ownership_modifier = ownership_delta * 100  # Convert to percentage points
+                            updated_ownership = max(0, min(100, original_ownership + ownership_modifier))
+                            
+                            # Store all transparency values in metadata
+                            player.metadata['original_projection'] = original_projection
+                            player.metadata['projection_modifier'] = projection_modifier
+                            player.metadata['updated_projection'] = updated_projection
+                            
+                            player.metadata['original_floor'] = original_floor
+                            player.metadata['floor_modifier'] = projection_modifier  # Same as projection
+                            player.metadata['updated_floor'] = updated_floor
+                            
+                            player.metadata['original_ceiling'] = original_ceiling
+                            player.metadata['ceiling_modifier'] = projection_modifier  # Same as projection
+                            player.metadata['updated_ceiling'] = updated_ceiling
+                            
+                            player.metadata['original_ownership'] = original_ownership
+                            player.metadata['ownership_modifier'] = ownership_modifier
+                            player.metadata['updated_ownership'] = updated_ownership
+                            
+                            # Apply target/fade multipliers based on signal (aggressive weighting)
+                            if signal == 'target':
+                                target_mult = 1.0 + (confidence * 0.4)  # Up to 40% boost
                                 player.metadata['newsletter_target_mult'] = target_mult
                                 player.metadata['newsletter_fade_mult'] = 1.0
                             elif signal == 'avoid':
-                                fade_mult = 1.0 - (confidence * 0.2)  # Up to 20% reduction  
+                                fade_mult = 1.0 - (confidence * 0.4)  # Up to 40% reduction  
                                 player.metadata['newsletter_fade_mult'] = fade_mult
                                 player.metadata['newsletter_target_mult'] = 1.0
                             else:
@@ -398,7 +478,53 @@ class MMAJsonExtractor(BaseJsonExtractor):
             except (json.JSONDecodeError, TypeError):
                 pass
         
+        # Calculate ITD probability based on finishing stats
+        record['itd_probability'] = self._calculate_itd_probability(record)
+        
+        # ML odds will be extracted from matchup data (Vegas_Odds_fight column)
+        
+        # ITD-adjusted ceiling will be calculated after ownership merge
+        
         return record
+    
+    def _calculate_itd_probability(self, record: Dict) -> float:
+        """Calculate ITD (Inside The Distance) probability based on fighter stats.
+        
+        Uses finishing stats to estimate probability of early finish.
+        """
+        # Base ITD probability 
+        base_itd = 0.35  # UFC average is around 35% ITD
+        
+        # Get finishing stats (normalized per minute)
+        knockdowns_min = record.get('knockdowns_min', 0)
+        submissions_min = record.get('submissions_min', 0) 
+        ss_landed_min = record.get('ss_landed_min', 0)
+        
+        # Calculate finishing potential score
+        finishing_score = 0
+        
+        # Knockdown power (high impact on ITD)
+        if knockdowns_min > 0.1:  # Above average knockdown rate
+            finishing_score += 0.3
+        elif knockdowns_min > 0.05:
+            finishing_score += 0.15
+            
+        # Submission threat
+        if submissions_min > 0.2:  # Active submission game
+            finishing_score += 0.25
+        elif submissions_min > 0.1:
+            finishing_score += 0.1
+            
+        # Strike volume (moderate impact)
+        if ss_landed_min > 5.0:  # High volume striker
+            finishing_score += 0.1
+        elif ss_landed_min > 3.0:
+            finishing_score += 0.05
+            
+        # Cap at reasonable maximum (90% ITD is very rare)
+        itd_prob = min(0.90, base_itd + finishing_score)
+        
+        return round(itd_prob, 3)
     
     def _extract_matchup_data(self, json_data: Dict) -> pd.DataFrame:
         """Extract MMA-specific matchup data using salary ID matching."""

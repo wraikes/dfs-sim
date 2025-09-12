@@ -1,6 +1,15 @@
-"""Monte Carlo simulation engine for DFS."""
+"""Simulation module for DFS lineup optimization."""
 
-from .simulator import Simulator
-from .variance_model import VarianceModel
+from .correlations import (
+    BaseCorrelationBuilder,
+    MMACorrelationBuilder,
+    CorrelationRule,
+    build_correlation_matrix
+)
 
-__all__ = ["Simulator", "VarianceModel"]
+__all__ = [
+    'BaseCorrelationBuilder',
+    'MMACorrelationBuilder',
+    'CorrelationRule',
+    'build_correlation_matrix'
+]
