@@ -1,6 +1,7 @@
 """JSON extractor for DFS data with sport-specific subclasses."""
 
 import json
+import glob
 import pandas as pd
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -148,10 +149,14 @@ class BaseJsonExtractor(ABC):
         
         return self.extract_from_json(json_data)
     
-    def extract_and_save_csv(self, filepath: str, output_path: Optional[str] = None) -> str:
-        """Extract players from JSON and save to CSV."""
+    def extract_and_save_csv(self, filepath: str, output_path: Optional[str] = None, apply_newsletter: bool = True) -> str:
+        """Extract players from JSON and save to CSV with optional newsletter signals."""
         # Load and extract players
         players = self.load_json_file(filepath)
+        
+        # Apply newsletter signals if requested and signals file exists
+        if apply_newsletter:
+            players = self._apply_newsletter_signals(players, filepath)
         
         # Convert to DataFrame
         player_data = []
@@ -171,11 +176,36 @@ class BaseJsonExtractor(ABC):
                 'std_dev': player.std_dev,
                 'value': player.value,
             }
-            # Add all metadata
+            # Add all metadata (including newsletter signals)
             row.update(player.metadata)
             player_data.append(row)
         
         df = pd.DataFrame(player_data)
+        
+        # Add newsletter columns if they don't exist (for players without signals)
+        newsletter_cols = ['newsletter_signal', 'newsletter_confidence', 'newsletter_reason', 
+                          'ceiling_delta_applied', 'ownership_delta_applied', 
+                          'newsletter_target_mult', 'newsletter_fade_mult']
+        
+        for col in newsletter_cols:
+            if col not in df.columns:
+                if 'mult' in col:
+                    df[col] = 1.0
+                elif 'delta' in col:
+                    df[col] = 0.0
+                elif col == 'newsletter_confidence':
+                    df[col] = 0.0
+                else:
+                    df[col] = 'neutral' if col == 'newsletter_signal' else ''
+        
+        # Fill NaN values for newsletter columns
+        df['newsletter_signal'] = df['newsletter_signal'].fillna('neutral')
+        df['newsletter_confidence'] = df['newsletter_confidence'].fillna(0.0)
+        df['newsletter_reason'] = df['newsletter_reason'].fillna('')
+        df['ceiling_delta_applied'] = df['ceiling_delta_applied'].fillna(0.0)
+        df['ownership_delta_applied'] = df['ownership_delta_applied'].fillna(0.0)
+        df['newsletter_target_mult'] = df['newsletter_target_mult'].fillna(1.0)
+        df['newsletter_fade_mult'] = df['newsletter_fade_mult'].fillna(1.0)
         
         # Determine output path - save to /csv/ folder if JSON is in organized structure
         if output_path is None:
@@ -195,6 +225,105 @@ class BaseJsonExtractor(ABC):
         logger.info(f"Saved {len(players)} players to {output_path}")
         
         return str(output_path)
+    
+    def _apply_newsletter_signals(self, players: List[Player], json_filepath: str) -> List[Player]:
+        """Apply newsletter signals to players if signals file exists."""
+        try:
+            from .llm_newsletter_processor import LLMNewsletterProcessor
+            
+            # Find signals JSON file
+            json_path = Path(json_filepath)
+            if json_path.parent.name == 'json':
+                # Look for signals file in same /json/ folder
+                signals_pattern = json_path.parent / "*signals.json"
+                signals_files = glob.glob(str(signals_pattern))
+                
+                if not signals_files:
+                    logger.info("No newsletter signals file found")
+                    return players
+                
+                # Use first signals file found
+                signals_path = signals_files[0]
+                logger.info(f"Applying newsletter signals from: {signals_path}")
+                
+                # Load and apply signals
+                with open(signals_path, 'r') as f:
+                    signals_data = json.load(f)
+                
+                # Apply signals to each player
+                modified_count = 0
+                for player in players:
+                    for player_signal in signals_data.get('players', []):
+                        if self._names_match(player.name, player_signal.get('name', '')):
+                            # Apply adjustments
+                            signal = player_signal.get('signal', 'neutral')
+                            confidence = player_signal.get('confidence', 0.5)
+                            ceiling_delta = player_signal.get('ceiling_delta', 0.0)
+                            ownership_delta = player_signal.get('ownership_delta', 0.0)
+                            reason = player_signal.get('reason', '')
+                            
+                            # Apply ceiling adjustment
+                            if ceiling_delta != 0:
+                                multiplier = 1.0 + ceiling_delta
+                                original_ceiling = player.ceiling
+                                new_ceiling = max(player.projection, original_ceiling * multiplier)
+                                player.ceiling = new_ceiling
+                            
+                            # Apply ownership adjustment  
+                            if ownership_delta != 0:
+                                original_ownership = player.ownership
+                                new_ownership = max(0, min(100, original_ownership + (ownership_delta * 100)))
+                                player.ownership = new_ownership
+                            
+                            # Apply target/fade multipliers based on signal
+                            if signal == 'target':
+                                target_mult = 1.0 + (confidence * 0.2)  # Up to 20% boost
+                                player.metadata['newsletter_target_mult'] = target_mult
+                                player.metadata['newsletter_fade_mult'] = 1.0
+                            elif signal == 'avoid':
+                                fade_mult = 1.0 - (confidence * 0.2)  # Up to 20% reduction  
+                                player.metadata['newsletter_fade_mult'] = fade_mult
+                                player.metadata['newsletter_target_mult'] = 1.0
+                            else:
+                                player.metadata['newsletter_target_mult'] = 1.0
+                                player.metadata['newsletter_fade_mult'] = 1.0
+                            
+                            # Store newsletter metadata
+                            player.metadata['newsletter_signal'] = signal
+                            player.metadata['newsletter_confidence'] = confidence
+                            player.metadata['newsletter_reason'] = reason
+                            player.metadata['ceiling_delta_applied'] = ceiling_delta
+                            player.metadata['ownership_delta_applied'] = ownership_delta
+                            
+                            modified_count += 1
+                            break
+                
+                logger.info(f"Applied newsletter signals to {modified_count} players")
+                
+        except ImportError:
+            logger.warning("LLM newsletter processor not available")
+        except Exception as e:
+            logger.error(f"Error applying newsletter signals: {e}")
+        
+        return players
+    
+    def _names_match(self, name1: str, name2: str) -> bool:
+        """Check if two names likely refer to the same player."""
+        n1_parts = set(name1.lower().split())
+        n2_parts = set(name2.lower().split())
+        
+        # If names share at least 2 words (typically first + last name)
+        if len(n1_parts & n2_parts) >= 2:
+            return True
+        
+        # Check if one name is contained in the other (for partial matches)
+        if len(n1_parts) >= 2 and len(n2_parts) >= 2:
+            n1_clean = name1.lower().replace('.', '').replace(',', '')
+            n2_clean = name2.lower().replace('.', '').replace(',', '')
+            
+            return n1_clean in n2_clean or n2_clean in n1_clean
+        
+        return False
 
 
 class MMAJsonExtractor(BaseJsonExtractor):
