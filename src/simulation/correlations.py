@@ -38,7 +38,7 @@ class MMACorrelationBuilder(BaseCorrelationBuilder):
     """Enhanced MMA correlation builder with ITD and ownership insights.
     
     Rules:
-    1. Direct opponents: Strong negative correlation (-0.85)
+    1. Direct opponents: Strong negative correlation (-0.95)
     2. Similar odds favorites: Weak positive correlation (+0.15) 
     3. Dog vs chalk: Weak negative correlation (-0.10)
     4. ITD fighters: Positive correlation with volatility (+0.20)
@@ -63,8 +63,8 @@ class MMACorrelationBuilder(BaseCorrelationBuilder):
                     if (opponent_name == player2_name or 
                         opponent_name == player2_name.split()[-1] or
                         opponent_name in player2_name):
-                        matrix[i][j] = -0.85  # Strong negative
-                        matrix[j][i] = -0.85
+                        matrix[i][j] = -0.95  # Nearly exclusive (can't both win)
+                        matrix[j][i] = -0.95
                         break
         
         # 2. Favorites correlation (similar ML favorites often win together)

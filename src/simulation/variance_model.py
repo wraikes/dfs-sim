@@ -67,7 +67,7 @@ class VarianceModel:
                 # Single position sports
                 Position.GOLFER: 0.40,
                 Position.DRIVER: 0.45,
-                Position.FIGHTER: 0.50,
+                Position.FIGHTER: 0.70,  # Extreme variance for MMA (KOs, subs, decisions)
             }
         
         if self.position_distributions is None:
