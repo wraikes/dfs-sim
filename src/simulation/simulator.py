@@ -5,7 +5,9 @@ from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
 import logging
 
-from ..models import Player, Lineup, Contest
+from ..models.player import Player
+from ..models.lineup import Lineup
+from ..models.contest import Contest
 from .variance_model import VarianceModel
 
 logger = logging.getLogger(__name__)

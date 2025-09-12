@@ -5,7 +5,7 @@ from typing import List, Tuple
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 
-from ..models import Player
+from ..models.player import Player
 
 
 @dataclass 
@@ -38,10 +38,11 @@ class MMACorrelationBuilder(BaseCorrelationBuilder):
     """Enhanced MMA correlation builder with ITD and ownership insights.
     
     Rules:
-    1. Direct opponents: Strong negative correlation (-0.85)
+    1. Direct opponents: Strong negative correlation (-0.95)
     2. Similar odds favorites: Weak positive correlation (+0.15) 
     3. Dog vs chalk: Weak negative correlation (-0.10)
     4. ITD fighters: Positive correlation with volatility (+0.20)
+    5. Fighting styles: Similar styles correlate (wrestlers, KO artists, grapplers)
     """
     
     def build_matrix(self) -> np.ndarray:
@@ -63,8 +64,8 @@ class MMACorrelationBuilder(BaseCorrelationBuilder):
                     if (opponent_name == player2_name or 
                         opponent_name == player2_name.split()[-1] or
                         opponent_name in player2_name):
-                        matrix[i][j] = -0.85  # Strong negative
-                        matrix[j][i] = -0.85
+                        matrix[i][j] = -0.95  # Nearly exclusive (can't both win)
+                        matrix[j][i] = -0.95
                         break
         
         # 2. Favorites correlation (similar ML favorites often win together)
@@ -104,19 +105,64 @@ class MMACorrelationBuilder(BaseCorrelationBuilder):
         
         # 4. ITD/finishing correlation (high variance fighters)
         for i, player1 in enumerate(self.players):
-            itd_prob1 = getattr(player1, 'itd_probability', 0)
+            itd_prob1 = player1.metadata.get('itd_probability', 0.35)
             
             if itd_prob1 > 0.4:  # High finishing potential
                 for j, player2 in enumerate(self.players):
                     if i >= j or abs(matrix[i][j]) > 0.1:
                         continue
                         
-                    itd_prob2 = getattr(player2, 'itd_probability', 0)
+                    itd_prob2 = player2.metadata.get('itd_probability', 0.35)
                     
                     # High ITD fighters create volatility correlation
                     if itd_prob2 > 0.4:
                         matrix[i][j] = 0.20
                         matrix[j][i] = 0.20
+        
+        # 5. Fighting style correlations
+        for i, player1 in enumerate(self.players):
+            metadata1 = player1.metadata or {}
+            itd_prob1 = metadata1.get('itd_probability', 0.35)
+            ml_odds1 = metadata1.get('ml_odds', 0)
+            
+            # Categorize fighting style based on stats
+            if itd_prob1 > 0.6:
+                style1 = 'finisher'  # KO/Sub artists
+            elif itd_prob1 < 0.25:
+                style1 = 'decision'  # Point fighters/wrestlers
+            else:
+                style1 = 'balanced'
+            
+            for j, player2 in enumerate(self.players):
+                if i >= j or abs(matrix[i][j]) > 0.1:
+                    continue
+                
+                metadata2 = player2.metadata or {}
+                itd_prob2 = metadata2.get('itd_probability', 0.35)
+                ml_odds2 = metadata2.get('ml_odds', 0)
+                
+                # Categorize second fighter
+                if itd_prob2 > 0.6:
+                    style2 = 'finisher'
+                elif itd_prob2 < 0.25:
+                    style2 = 'decision'
+                else:
+                    style2 = 'balanced'
+                
+                # Apply style-based correlations
+                if style1 == 'finisher' and style2 == 'finisher':
+                    # KO artists tend to correlate (exciting cards)
+                    matrix[i][j] = 0.30
+                    matrix[j][i] = 0.30
+                elif style1 == 'decision' and style2 == 'decision':
+                    # Grinders correlate (boring cards)
+                    matrix[i][j] = 0.25
+                    matrix[j][i] = 0.25
+                elif (style1 == 'finisher' and style2 == 'decision') or \
+                     (style1 == 'decision' and style2 == 'finisher'):
+                    # Opposite styles have slight negative correlation
+                    matrix[i][j] = -0.05
+                    matrix[j][i] = -0.05
         
         return matrix
     

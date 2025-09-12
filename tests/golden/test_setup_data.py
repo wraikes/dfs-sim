@@ -1,0 +1,84 @@
+"""Test setup_data.py script functionality."""
+
+import pytest
+import sys
+import subprocess
+import shutil
+from pathlib import Path
+
+
+def test_setup_data_mma():
+    """Test MMA setup_data.py creates directories and provides URLs."""
+    # Clean up any existing test data
+    test_path = Path("data/mma/99")
+    if test_path.exists():
+        shutil.rmtree(test_path)
+    
+    # Run setup_data.py for MMA pid 99
+    result = subprocess.run([
+        sys.executable, "src/cli/setup_data.py", 
+        "--sport", "mma", 
+        "--pid", "99"
+    ], capture_output=True, text=True)
+    
+    # Check command succeeded
+    assert result.returncode == 0, f"setup_data.py failed: {result.stderr}"
+    
+    # Verify directories were created
+    assert (test_path / "raw").exists(), "raw directory not created"
+    assert (test_path / "csv").exists(), "csv directory not created" 
+    assert (test_path / "output").exists(), "output directory not created"
+    
+    # Check that output contains URL information
+    output = result.stdout
+    assert "DraftKings Salaries" in output, "DraftKings URL not displayed"
+    assert "https://www.draftkings.com" in output, "DK URL not found"
+    assert "99" in output, "PID not substituted in URLs"
+    
+    # Copy 466 raw files to 99 for subsequent tests
+    source_path = Path("data/mma/466")
+    
+    # Copy main data file
+    if (source_path / "json/dk_466.json").exists():
+        shutil.copy(
+            source_path / "json/dk_466.json",
+            test_path / "raw/dk_99.json"
+        )
+    
+    # Copy newsletter signals
+    if (source_path / "json/linestar_newsletter_signals.json").exists():
+        shutil.copy(
+            source_path / "json/linestar_newsletter_signals.json", 
+            test_path / "raw/newsletter_signals.json"
+        )
+    
+    # Verify test files were copied
+    assert (test_path / "raw/dk_99.json").exists(), "Test data file not copied"
+    assert (test_path / "raw/newsletter_signals.json").exists(), "Newsletter signals not copied"
+    
+    print(f"✅ Setup test passed - directories created and test data copied to {test_path}")
+
+
+def test_setup_data_validate():
+    """Test validation of uploaded files."""
+    # This assumes test_setup_data_mma has run first
+    test_path = Path("data/mma/99")
+    assert test_path.exists(), "Test data directory doesn't exist - run test_setup_data_mma first"
+    
+    # Run validation
+    result = subprocess.run([
+        sys.executable, "src/cli/setup_data.py",
+        "--sport", "mma",
+        "--pid", "99", 
+        "--validate-only"
+    ], capture_output=True, text=True)
+    
+    assert result.returncode == 0, f"Validation failed: {result.stderr}"
+    assert "✅ All required files found!" in result.stdout, "File validation failed"
+    
+    print("✅ Validation test passed")
+
+
+if __name__ == "__main__":
+    test_setup_data_mma()
+    test_setup_data_validate()
