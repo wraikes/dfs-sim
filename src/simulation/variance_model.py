@@ -101,6 +101,19 @@ class VarianceModel:
             variance_mult = self.position_variance.get(player.position, 0.25)
             std_dev = mean * variance_mult
         
+        # Apply fight competitiveness variance adjustment
+        ml_odds = getattr(player, 'ml_odds', 0)
+        opponent_ml_odds = getattr(player, 'opponent_ml_odds', 0)
+        
+        if ml_odds != 0 and opponent_ml_odds != 0:
+            odds_spread = abs(ml_odds - opponent_ml_odds)
+            if odds_spread < 100:  # Close fight
+                competitiveness_mult = 0.9  # Lower variance (more predictable)
+            else:  # Mismatch
+                competitiveness_mult = 1.1  # Higher variance (finish-likely)
+            
+            std_dev *= competitiveness_mult
+        
         # Get distribution type
         dist_type = self.position_distributions.get(player.position, DistributionType.NORMAL)
         

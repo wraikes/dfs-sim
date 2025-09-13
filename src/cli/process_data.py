@@ -183,26 +183,46 @@ class BaseDataProcessor(ABC):
                 df.loc[idx, 'updated_ownership'] = row['ownership'] + (ownership_delta * 100)
         
         # Apply derived metric influences AFTER newsletter signals (positive only to avoid double-counting)
-        # Target: 15% max total impact from our calculated metrics
+        # Target: 5% max total impact from our calculated metrics (reduced from 15% to let correlations handle style effects)
         
-        # 1. Finishing rate influences ceiling (0-12% boost)
+        # 1. Finishing rate influences ceiling (0-4% boost)
         finishing_boost = df['finishing_rate'] > 0
-        df.loc[finishing_boost, 'updated_ceiling'] *= (1 + df.loc[finishing_boost, 'finishing_rate'] * 0.12)
+        df.loc[finishing_boost, 'updated_ceiling'] *= (1 + df.loc[finishing_boost, 'finishing_rate'] * 0.04)
         
-        # 2. Style score influences projection (0-8% boost for well-rounded fighters)
+        # 2. Style score influences projection (0-2.7% boost for well-rounded fighters)
         style_boost = df['style_score'] > 0
-        df.loc[style_boost, 'updated_projection'] *= (1 + df.loc[style_boost, 'style_score'] * 0.0015)
+        df.loc[style_boost, 'updated_projection'] *= (1 + df.loc[style_boost, 'style_score'] * 0.0005)
         
-        # 3. Matchup advantage influences all metrics (0-6% boost)
+        # 3. Matchup advantage influences all metrics (0-2% boost)
         positive_matchup = df['matchup_advantage'] > 0
-        df.loc[positive_matchup, 'updated_projection'] *= (1 + df.loc[positive_matchup, 'matchup_advantage'] * 0.006)
-        df.loc[positive_matchup, 'updated_floor'] *= (1 + df.loc[positive_matchup, 'matchup_advantage'] * 0.006)
-        df.loc[positive_matchup, 'updated_ceiling'] *= (1 + df.loc[positive_matchup, 'matchup_advantage'] * 0.006)
+        df.loc[positive_matchup, 'updated_projection'] *= (1 + df.loc[positive_matchup, 'matchup_advantage'] * 0.002)
+        df.loc[positive_matchup, 'updated_floor'] *= (1 + df.loc[positive_matchup, 'matchup_advantage'] * 0.002)
+        df.loc[positive_matchup, 'updated_ceiling'] *= (1 + df.loc[positive_matchup, 'matchup_advantage'] * 0.002)
         
-        # 4. Takedown effectiveness influences floor (0-4% boost for strong grapplers)
+        # 4. Takedown effectiveness influences floor (0-1.3% boost for strong grapplers)
         takedown_eff = df['takedowns_per_fight'] * (1 - df['takedown_defense'] / 100)
         strong_grapplers = takedown_eff > 0.5
-        df.loc[strong_grapplers, 'updated_floor'] *= (1 + (takedown_eff.loc[strong_grapplers] - 0.5) * 0.08)
+        df.loc[strong_grapplers, 'updated_floor'] *= (1 + (takedown_eff.loc[strong_grapplers] - 0.5) * 0.027)
+        
+        # 5. Vegas odds adjustments (most important data source)
+        print("   🎰 Applying Vegas odds adjustments...")
+        
+        for idx, row in df.iterrows():
+            ml_odds = row['ml_odds']
+            if ml_odds == 0:  # Skip if no odds data
+                continue
+                
+            # Convert ML odds to win probability
+            if ml_odds < 0:  # Favorite
+                win_prob = abs(ml_odds) / (abs(ml_odds) + 100)
+                # Higher floor for favorites (win more often)
+                floor_boost = win_prob * 0.15  # Up to 15% boost for heavy favorites
+                df.loc[idx, 'updated_floor'] *= (1 + floor_boost)
+            else:  # Dog
+                win_prob = 100 / (ml_odds + 100)
+                # Higher ceiling for dogs (upset potential)
+                ceiling_boost = (1 - win_prob) * 0.20  # Up to 20% boost for heavy dogs
+                df.loc[idx, 'updated_ceiling'] *= (1 + ceiling_boost)
         
         return df
     
@@ -326,7 +346,17 @@ class MMADataProcessor(BaseDataProcessor):
                     'floor': player_data.get('Floor', 0.0), 
                     'ceiling': player_data.get('Ceil', 0.0),
                     'ownership': ownership,
-                    'std_dev': 25.0  # Default variance for MMA
+                    'std_dev': 25.0,  # Default variance for MMA
+                    'hteam': player_data.get('HTEAM', ''),  # Home team
+                    'oteam': player_data.get('OTEAM', ''),  # Opponent team
+                    'htid': player_data.get('HTID', 0),  # Home team ID
+                    'otid': player_data.get('OTID', 0),  # Opponent team ID 
+                    'agg_proj': player_data.get('AggProj', 0.0),  # Aggregate projection
+                    'confidence': player_data.get('Conf', 50),  # Projection confidence
+                    'game_info': player_data.get('GI', ''),  # Game info with fight time
+                    'opp_rank': player_data.get('OppRank', 0),  # Opponent ranking
+                    'stars': player_data.get('Stars', 3),  # Player star rating
+                    'alert_score': player_data.get('AlertScore', 0),  # Alert/attention score
                 }
                 players.append(player)
         except (json.JSONDecodeError, KeyError) as e:
@@ -368,7 +398,51 @@ class MMADataProcessor(BaseDataProcessor):
         df['win_pct'] = df['player_id'].map(win_pct_map).fillna(0)
         df['itd_odds'] = df['player_id'].map(itd_odds_map).fillna(0)
         
+        # Extract opponent relationships using OTEAM (opponent team) data
+        opponent_map = {}
+        opponent_odds_map = {}
+        
+        # Group fighters by their OTEAM to find opponents
+        for i, row1 in df.iterrows():
+            if row1['player_id'] in opponent_map:
+                continue  # Already matched
+                
+            player1_id = row1['player_id']
+            player1_hteam = row1['hteam']
+            player1_oteam = row1['oteam']
+            
+            # Skip if no team data
+            if not player1_oteam or not player1_hteam:
+                continue
+                
+            # Find the fighter whose HTEAM matches our OTEAM
+            for j, row2 in df.iterrows():
+                if i >= j or row2['player_id'] in opponent_map:
+                    continue
+                    
+                player2_id = row2['player_id']
+                player2_hteam = row2['hteam']
+                player2_oteam = row2['oteam']
+                
+                # Skip if no team data
+                if not player2_oteam or not player2_hteam:
+                    continue
+                
+                # Check if they are opponents: player1's OTEAM = player2's HTEAM AND vice versa
+                if player1_oteam == player2_hteam and player1_hteam == player2_oteam:
+                    opponent_map[player1_id] = row2['name']
+                    opponent_map[player2_id] = row1['name']
+                    # Also store opponent odds for variance modeling
+                    opponent_odds_map[player1_id] = row2['ml_odds']
+                    opponent_odds_map[player2_id] = row1['ml_odds']
+                    break
+        
+        # Add opponent data to dataframe
+        df['opponent'] = df['player_id'].map(opponent_map).fillna('')
+        df['opponent_ml_odds'] = df['player_id'].map(opponent_odds_map).fillna(0)
+        
         print(f"   ✅ Parsed {len(df)} fighters from JSON")
+        print(f"   🥊 Found {len(opponent_map)} opponent relationships using OTEAM/HTEAM data")
         return df
     
     def calculate_sport_metrics(self, df: pd.DataFrame) -> pd.DataFrame:

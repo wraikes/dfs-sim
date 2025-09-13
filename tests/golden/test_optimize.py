@@ -10,10 +10,10 @@ from pathlib import Path
 
 def test_optimize_mma_golden():
     """Golden Test: MMA optimize.py generates lineups with small simulation count."""
-    test_path = Path("data/mma/dk/99")
+    test_path = Path("data/mma/99/dk")
     
     # Verify processed CSV exists (from process_data golden test)
-    csv_file = test_path / "csv/dk_99_extracted.csv"
+    csv_file = test_path / "csv/extracted.csv"
     assert csv_file.exists(), f"Processed CSV not found: {csv_file} - run test_process_data.py first"
     
     # Run optimize.py with small simulation count for testing
@@ -31,7 +31,7 @@ def test_optimize_mma_golden():
     assert result.returncode == 0, f"optimize.py failed: {result.stderr}"
     
     # Verify output file was created
-    output_file = test_path / "output/lineups_99.csv"
+    output_file = test_path / "lineups/lineups_99.csv"
     assert output_file.exists(), f"Lineup file not created: {output_file}"
     
     # Load and validate lineup CSV
@@ -127,7 +127,7 @@ def test_optimize_dk_export_golden():
     assert result.returncode == 0, f"DK export failed: {result.stderr}"
     
     # Check DK upload file was created
-    dk_file = Path("data/mma/dk/99/output/dk_upload_99.csv")
+    dk_file = Path("data/mma/99/dk/lineups/dk_upload_99.csv")
     assert dk_file.exists(), f"DK upload file not created: {dk_file}"
     
     # Validate DK format

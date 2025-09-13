@@ -47,6 +47,9 @@ class BaseLineup:
     
     # Simulation results
     simulated_scores: Optional[np.ndarray] = None
+    percentile_25: float = 0
+    percentile_50: float = 0
+    percentile_75: float = 0
     percentile_95: float = 0
     percentile_99: float = 0
     
@@ -71,6 +74,7 @@ class BaseOptimizer(ABC):
         self.players = players
         self.sport = sport.lower()
         self.field_size = field_size
+        self.cash_game_mode = False  # Default to GPP mode
         
         # Get sport-specific constraints
         self.constraints = self._get_sport_constraints()
@@ -130,6 +134,16 @@ class BaseOptimizer(ABC):
             player = self._create_player_from_row(row)
             players.append(player)
         
+        return players
+    
+    def load_players_from_dataframe(self, df: pd.DataFrame) -> List[Player]:
+        """Load players from DataFrame."""
+        players = []
+        for _, row in df.iterrows():
+            player = self._create_player_from_row(row)
+            players.append(player)
+        
+        self.players = players
         return players
     
     @abstractmethod 
@@ -245,11 +259,15 @@ class BaseOptimizer(ABC):
         for i, lineup in enumerate(lineups[:5], 1):
             print(f"\n🏆 LINEUP #{i}")
             print("-" * 50)
-            print(f"GPP Score: {lineup.gpp_score:.1f}")
+            print(f"Score: {lineup.gpp_score:.1f}")
+            print(f"25th %ile: {lineup.percentile_25:.1f}")
+            print(f"50th %ile: {lineup.percentile_50:.1f}")
+            print(f"75th %ile: {lineup.percentile_75:.1f}")
             print(f"95th %ile: {lineup.percentile_95:.1f}")
             print(f"99th %ile: {lineup.percentile_99:.1f}")
             print(f"Leverage: {lineup.leverage_score:.1f}")
-            print(f"Uniqueness: {lineup.uniqueness_score:.2%}")
+            if not (hasattr(self, 'cash_game_mode') and self.cash_game_mode):
+                print(f"Uniqueness: {lineup.uniqueness_score:.2%}")
             
             salary_remaining = self.constraints.salary_cap - lineup.total_salary
             print(f"\n💰 Salary: ${lineup.total_salary:,} (${salary_remaining:,} left)")

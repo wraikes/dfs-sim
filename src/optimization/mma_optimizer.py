@@ -42,6 +42,9 @@ class MMALineup(BaseLineup):
 class MMAOptimizer(BaseOptimizer):
     """MMA-specific DFS optimizer."""
     
+    def __init__(self, players: List[Player], sport: str = 'mma', field_size: int = 10000):
+        super().__init__(players, sport, field_size)
+    
     def _get_sport_constraints(self) -> SportConstraints:
         """Get MMA-specific constraints."""
         return SportConstraints(
@@ -116,14 +119,17 @@ class MMAOptimizer(BaseOptimizer):
             name=row['name'],
             position=Position.FIGHTER,
             team=row.get('team', ''),
+            opponent=row.get('opponent', ''),
             salary=int(row['salary']),
             projection=float(row['updated_projection']),
+            ownership=float(row['updated_ownership']),
             floor=float(row['updated_floor']),
             ceiling=float(row['updated_ceiling']),
             std_dev=float(row.get('std_dev', 25.0)),
-            ownership=float(row['updated_ownership']),
-            value=float(row.get('value', 0.0)),
-            opponent=row.get('opponent', None)
+            game_total=0.0,  # Not applicable for MMA
+            team_total=0.0,  # Not applicable for MMA
+            spread=0.0,      # Not applicable for MMA
+            value=float(row.get('value', 0.0))
         )
         
         # Add MMA-specific metadata
@@ -238,28 +244,54 @@ class MMAOptimizer(BaseOptimizer):
         if lineup.simulated_scores is None:
             scores = self.simulator._simulate_correlated(lineup.players)
             lineup.simulated_scores = scores
+            lineup.percentile_25 = np.percentile(scores, 25)
+            lineup.percentile_50 = np.percentile(scores, 50)
+            lineup.percentile_75 = np.percentile(scores, 75)
             lineup.percentile_95 = np.percentile(scores, 95)
             lineup.percentile_99 = np.percentile(scores, 99)
         
-        # 1. Ceiling score (40% weight)
-        ceiling_score = lineup.percentile_95 * 0.3 + lineup.percentile_99 * 0.1
-        
-        # 2. Leverage score (25% weight)  
-        lineup.leverage_score = self._calculate_leverage_score(lineup)
-        leverage_score = lineup.leverage_score * 0.25
-        
-        # 3. Uniqueness vs field (20% weight)
-        lineup.uniqueness_score = self._calculate_lineup_uniqueness(lineup)
-        uniqueness_score = lineup.uniqueness_score * 100 * 0.20
-        
-        # 4. Diversity vs our lineups (10% weight)
-        diversity_score = self._calculate_lineup_diversity(lineup) * 100 * 0.10
-        
-        # 5. Ownership penalty (5% weight)
-        ownership_penalty = max(0, lineup.total_ownership - 100) * 0.5
-        
-        # Calculate base GPP score
-        gpp_score = ceiling_score + leverage_score + uniqueness_score + diversity_score - ownership_penalty
+        if self.cash_game_mode:
+            # Cash Game Scoring: Focus on consistency and floor
+            # 1. Floor/median score (70% weight)
+            consistency_score = lineup.percentile_25 * 0.2 + lineup.percentile_50 * 0.5
+            
+            # 2. Reduced leverage (10% weight) - chalk is OK for cash
+            lineup.leverage_score = self._calculate_leverage_score(lineup)
+            leverage_score = lineup.leverage_score * 0.05
+            
+            # 3. No uniqueness bonus (0% weight) - don't need differentiation
+            lineup.uniqueness_score = self._calculate_lineup_uniqueness(lineup)
+            uniqueness_score = 0
+            
+            # 4. Diversity vs our lineups (5% weight)
+            diversity_score = self._calculate_lineup_diversity(lineup) * 100 * 0.05
+            
+            # 5. Penalty for extreme ownership (>200% is risky even for cash)
+            ownership_penalty = max(0, lineup.total_ownership - 200) * 0.2
+            
+            # Calculate cash game score
+            gpp_score = consistency_score + leverage_score + uniqueness_score + diversity_score - ownership_penalty
+        else:
+            # GPP Tournament Scoring: Focus on ceiling and leverage
+            # 1. Ceiling score (40% weight)
+            ceiling_score = lineup.percentile_95 * 0.3 + lineup.percentile_99 * 0.1
+            
+            # 2. Leverage score (25% weight)  
+            lineup.leverage_score = self._calculate_leverage_score(lineup)
+            leverage_score = lineup.leverage_score * 0.25
+            
+            # 3. Uniqueness vs field (20% weight)
+            lineup.uniqueness_score = self._calculate_lineup_uniqueness(lineup)
+            uniqueness_score = lineup.uniqueness_score * 100 * 0.20
+            
+            # 4. Diversity vs our lineups (10% weight)
+            diversity_score = self._calculate_lineup_diversity(lineup) * 100 * 0.10
+            
+            # 5. Ownership penalty (5% weight)
+            ownership_penalty = max(0, lineup.total_ownership - 100) * 0.5
+            
+            # Calculate GPP score
+            gpp_score = ceiling_score + leverage_score + uniqueness_score + diversity_score - ownership_penalty
         
         # MMA-specific bonuses
         if isinstance(lineup, MMALineup):

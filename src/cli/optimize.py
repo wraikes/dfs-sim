@@ -31,12 +31,12 @@ from src.optimization.base_optimizer import BaseOptimizer
 from src.simulation.simulator import Simulator
 
 
-def create_optimizer(sport: str, pid: str) -> BaseOptimizer:
+def create_optimizer(sport: str, players: List = None) -> BaseOptimizer:
     """Factory function to create sport-specific optimizer."""
     optimizers = {
-        'mma': lambda: _import_mma_optimizer()(pid),
-        # 'nfl': lambda: _import_nfl_optimizer()(pid),  # Future implementation
-        # 'nba': lambda: _import_nba_optimizer()(pid),  # Future implementation
+        'mma': lambda: _import_mma_optimizer()(players or [], sport),
+        # 'nfl': lambda: _import_nfl_optimizer()(players or [], sport),  # Future implementation
+        # 'nba': lambda: _import_nba_optimizer()(players or [], sport),  # Future implementation
     }
     
     optimizer_factory = optimizers.get(sport.lower())
@@ -54,8 +54,8 @@ def _import_mma_optimizer():
 
 def load_processed_data(sport: str, pid: str, site: SiteCode = SiteCode.DK) -> pd.DataFrame:
     """Load processed CSV data."""
-    data_path = Path(f"data/{sport}/{site.value}/{pid}/csv")
-    csv_file = data_path / f"dk_{pid}_extracted.csv"
+    data_path = Path(f"data/{sport}/{pid}/{site.value}/csv")
+    csv_file = data_path / "extracted.csv"
     
     if not csv_file.exists():
         raise FileNotFoundError(
@@ -108,22 +108,26 @@ def display_lineup_summary(lineups: List, sport: str):
             print(f"   99th Percentile: {best_lineup.percentile_99:.1f}")
 
 
-def export_lineups(lineups: List, sport: str, pid: str, site: SiteCode, output_format: str = 'csv') -> Path:
+def export_lineups(lineups: List, sport: str, pid: str, site: SiteCode, output_format: str = 'csv', contest_type: str = 'gpp') -> Path:
     """Export lineups to file."""
-    output_dir = Path(f"data/{sport}/{site.value}/{pid}/output")
+    output_dir = Path(f"data/{sport}/{pid}/{site.value}/lineups")
     output_dir.mkdir(exist_ok=True)
     
     if output_format.lower() == 'csv':
-        return _export_lineups_csv(lineups, output_dir, pid)
+        return _export_lineups_csv(lineups, output_dir, pid, contest_type)
     elif output_format.lower() == 'dk':
-        return _export_lineups_dk(lineups, output_dir, pid)
+        return _export_lineups_dk(lineups, output_dir, pid, contest_type)
     else:
         raise ValueError(f"Unsupported export format: {output_format}")
 
 
-def _export_lineups_csv(lineups: List, output_dir: Path, pid: str) -> Path:
+def _export_lineups_csv(lineups: List, output_dir: Path, pid: str, contest_type: str = 'gpp') -> Path:
     """Export lineups to detailed CSV format."""
-    output_file = output_dir / f"lineups_{pid}.csv"
+    output_file = output_dir / f"lineups_{pid}_{contest_type}.csv"
+    
+    # Sort lineups by GPP score (highest first)
+    if lineups and hasattr(lineups[0], 'gpp_score'):
+        lineups = sorted(lineups, key=lambda x: x.gpp_score, reverse=True)
     
     lineup_data = []
     for i, lineup in enumerate(lineups, 1):
@@ -141,6 +145,12 @@ def _export_lineups_csv(lineups: List, output_dir: Path, pid: str) -> Path:
             # Add lineup-level metrics to each row
             if hasattr(lineup, 'gpp_score'):
                 row['gpp_score'] = lineup.gpp_score
+            if hasattr(lineup, 'percentile_25'):
+                row['percentile_25'] = lineup.percentile_25
+            if hasattr(lineup, 'percentile_50'):
+                row['percentile_50'] = lineup.percentile_50
+            if hasattr(lineup, 'percentile_75'):
+                row['percentile_75'] = lineup.percentile_75
             if hasattr(lineup, 'percentile_95'):
                 row['percentile_95'] = lineup.percentile_95
             if hasattr(lineup, 'percentile_99'):
@@ -158,9 +168,9 @@ def _export_lineups_csv(lineups: List, output_dir: Path, pid: str) -> Path:
     return output_file
 
 
-def _export_lineups_dk(lineups: List, output_dir: Path, pid: str) -> Path:
+def _export_lineups_dk(lineups: List, output_dir: Path, pid: str, contest_type: str = 'gpp') -> Path:
     """Export lineups in DraftKings upload format."""
-    output_file = output_dir / f"dk_upload_{pid}.csv"
+    output_file = output_dir / f"dk_upload_{pid}_{contest_type}.csv"
     
     # This would need sport-specific position mapping
     # For now, just basic format
@@ -196,6 +206,8 @@ def main():
                        help='Number of lineups to generate (default: 20)')
     parser.add_argument('--simulations', type=int, default=25000,
                        help='Number of Monte Carlo simulations (default: 25,000)')
+    parser.add_argument('--cash-game', action='store_true',
+                       help='Optimize for cash games (50/50s) instead of GPPs')
     parser.add_argument('--export-format', type=str, default='csv',
                        choices=['csv', 'dk'],
                        help='Export format (default: csv)')
@@ -211,6 +223,7 @@ def main():
     print(f"Site: {args.site.upper()}")
     print(f"Entries: {args.entries}")
     print(f"Simulations: {args.simulations:,}")
+    print(f"Contest Type: {'Cash Game' if args.cash_game else 'GPP Tournament'}")
     print("=" * 60)
     
     try:
@@ -223,7 +236,7 @@ def main():
         
         if args.summary_only:
             # Just display summary of existing lineups
-            output_dir = Path(f"data/{args.sport}/{site.value}/{args.pid}/output")
+            output_dir = Path(f"data/{args.sport}/{args.pid}/{site.value}/lineups")
             lineup_file = output_dir / f"lineups_{args.pid}.csv"
             if not lineup_file.exists():
                 print(f"❌ No existing lineups found: {lineup_file}")
@@ -236,8 +249,9 @@ def main():
         
         # Create optimizer
         print(f"\n2️⃣ Initializing {args.sport.upper()} optimizer...")
-        optimizer = create_optimizer(args.sport, args.pid)
+        optimizer = create_optimizer(args.sport)
         optimizer.load_players_from_dataframe(df)
+        optimizer.cash_game_mode = args.cash_game
         
         print(f"   ✅ Loaded {len(optimizer.players)} players")
         
@@ -245,12 +259,12 @@ def main():
         print(f"\n3️⃣ Running Monte Carlo simulations...")
         start_time = time.time()
         
-        simulator = Simulator()
+        simulator = Simulator(n_simulations=args.simulations)
         
         # Simulate each player
         print(f"   🎲 Simulating {len(optimizer.players)} players × {args.simulations:,} runs...")
         for player in optimizer.players:
-            scores = simulator._simulate_player(player, args.simulations)
+            scores = simulator.simulate_player(player, use_cache=False)
             player.simulated_scores = scores
         
         sim_time = time.time() - start_time
@@ -260,21 +274,22 @@ def main():
         # Generate field for uniqueness scoring
         print(f"\n4️⃣ Generating field simulation...")
         field_start = time.time()
-        optimizer.generate_field(5000)  # Generate 5k opponent lineups
+        optimizer.generate_field()  # Generate opponent lineups
         field_time = time.time() - field_start
         print(f"   ✅ Generated field in {field_time:.1f}s")
         
         # Generate optimized lineups
         print(f"\n5️⃣ Optimizing lineups...")
         opt_start = time.time()
-        lineups = optimizer.generate_lineups(args.entries)
+        lineups = optimizer.optimize_lineups(args.entries)
         opt_time = time.time() - opt_start
         
         print(f"   ✅ Generated {len(lineups)} lineups in {opt_time:.1f}s")
         
         # Export lineups
         print(f"\n6️⃣ Exporting lineups...")
-        output_file = export_lineups(lineups, args.sport, args.pid, site, args.export_format)
+        contest_type = "cash" if args.cash_game else "gpp"
+        output_file = export_lineups(lineups, args.sport, args.pid, site, args.export_format, contest_type)
         
         # Display summary
         display_lineup_summary(lineups, args.sport)
