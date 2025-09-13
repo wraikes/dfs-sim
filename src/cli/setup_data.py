@@ -47,7 +47,7 @@ class DataSetupManager:
                     {
                         'name': 'LineStar Contest Data',
                         'url_template': 'https://www.linestarapp.com/DesktopModules/DailyFantasyApi/API/Fantasy/GetSalariesV4?sport={sport_id}&site={site_id}&periodId={pid}',
-                        'file': 'dk_{pid}.json',
+                        'file': '{pid}.json',
                         'description': 'Complete contest data including salaries, projections, and ownership'
                     }
                 ],
@@ -90,23 +90,17 @@ class DataSetupManager:
     def create_directory_structure(self):
         """Create empty directories and files for manual data input."""
         # Create directories
-        raw_dir = self.base_path / 'raw'
-        raw_dir.mkdir(parents=True, exist_ok=True)
-        print(f"📁 Created: {raw_dir}")
+        json_dir = self.base_path / 'json'
+        json_dir.mkdir(parents=True, exist_ok=True)
+        print(f"📁 Created: {json_dir}")
         
         # Create empty files for user to fill
-        dk_file = raw_dir / f"dk_{self.pid}.json"
-        newsletter_file = raw_dir / "newsletter_signals.json"
+        contest_file = json_dir / f"{self.pid}.json"
         
         # Create empty JSON file
-        if not dk_file.exists():
-            dk_file.write_text("{}")
-            print(f"📄 Created empty: {dk_file}")
-        
-        # Create empty newsletter file
-        if not newsletter_file.exists():
-            newsletter_file.write_text("{}")
-            print(f"📄 Created empty: {newsletter_file}")
+        if not contest_file.exists():
+            contest_file.write_text("{}")
+            print(f"📄 Created empty: {contest_file}")
     
     def display_data_sources(self):
         """Display data source URLs and instructions."""
@@ -135,15 +129,8 @@ class DataSetupManager:
             print(f"   📄 File: {filename}")  
             print(f"   📝 Description: {source['description']}")
             print(f"   🔗 URL: {url}")
-            print(f"   💾 Save to: {self.base_path}/raw/{filename}")
+            print(f"   💾 Save to: {self.base_path}/json/{filename}")
         
-        # Newsletter signals file
-        newsletter_path = self.base_path / 'raw' / config['newsletter_file']
-        print(f"\n📰 Newsletter Signals (Optional)")
-        print(f"   📄 File: {config['newsletter_file']}")
-        print(f"   📝 Manual creation of targets/fades/volatile plays")
-        print(f"   💾 Save to: {newsletter_path}")
-        print(f"   📋 Format: {self._get_newsletter_format()}")
         
         return True
     
@@ -167,7 +154,7 @@ class DataSetupManager:
         """Create newsletter template file."""
         config = self.sport_configs.get(self.sport, {})
         newsletter_file = config.get('newsletter_file', 'newsletter_signals.json')
-        newsletter_path = self.base_path / 'raw' / newsletter_file
+        newsletter_path = self.base_path / 'json' / newsletter_file
         
         template = {
             "targets": [],
@@ -184,7 +171,7 @@ class DataSetupManager:
     def validate_files(self) -> bool:
         """Validate that required files have been uploaded."""
         config = self.sport_configs.get(self.sport, {})
-        raw_path = self.base_path / 'raw'
+        json_path = self.base_path / 'json'
         
         missing_files = []
         found_files = []
@@ -192,7 +179,7 @@ class DataSetupManager:
         for source in config.get('data_sources', []):
             # Substitute {pid} in filename
             filename = source['file'].replace('{pid}', self.pid)
-            file_path = raw_path / filename
+            file_path = json_path / filename
             if file_path.exists():
                 file_size = file_path.stat().st_size
                 found_files.append(f"✅ {filename} ({file_size:,} bytes)")
@@ -202,7 +189,7 @@ class DataSetupManager:
         # Check newsletter file (optional)
         newsletter_file = config.get('newsletter_file', '')
         if newsletter_file:
-            newsletter_path = raw_path / newsletter_file
+            newsletter_path = json_path / newsletter_file
             if newsletter_path.exists():
                 found_files.append(f"📰 {newsletter_file} (optional)")
             else:
@@ -227,7 +214,7 @@ class DataSetupManager:
         """Display next steps after data collection."""
         print(f"\n🎯 NEXT STEPS")
         print("=" * 40)
-        print(f"1. Verify your data files in: {self.base_path}/raw/")
+        print(f"1. Verify your data files in: {self.base_path}/json/")
         print(f"2. Run data processing:")
         print(f"   python process_data.py --sport {self.sport} --pid {self.pid}")
         print(f"3. After reviewing processed data:")
@@ -289,8 +276,7 @@ def main():
         print("=" * 40)
         print("1. Visit each URL above")
         print("2. Download/save the data files to the specified locations")
-        print("3. (Optional) Fill out newsletter signals JSON")
-        print("4. Run validation when complete:")
+        print("3. Run validation when complete:")
         print(f"   python setup_data.py --sport {args.sport} --pid {args.pid} --validate-only")
         
         return 0

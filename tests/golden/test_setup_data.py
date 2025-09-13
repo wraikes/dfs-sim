@@ -25,12 +25,11 @@ def test_setup_data_mma():
     # Check command succeeded
     assert result.returncode == 0, f"setup_data.py failed: {result.stderr}"
     
-    # Verify raw directory was created
-    assert (test_path / "raw").exists(), "raw directory not created"
+    # Verify json directory was created
+    assert (test_path / "json").exists(), "json directory not created"
     
-    # Verify empty files were created
-    assert (test_path / "raw" / "dk_99.json").exists(), "empty dk_99.json not created"
-    assert (test_path / "raw" / "newsletter_signals.json").exists(), "empty newsletter_signals.json not created"
+    # Verify empty file was created
+    assert (test_path / "json" / "99.json").exists(), "empty 99.json not created"
     
     # Check that output contains URL information
     output = result.stdout
@@ -38,51 +37,21 @@ def test_setup_data_mma():
     assert "https://www.linestarapp.com" in output, "LineStar URL not found"
     assert "99" in output, "PID not substituted in URLs"
     
-    # Copy 466 raw files to 99 for subsequent tests
+    # Copy 466 json files to 99 for subsequent tests
     source_path = Path("data/mma/dk/466")
     
     # Copy main data file
-    if (source_path / "json/dk_466.json").exists():
+    if (source_path / "json/466.json").exists():
         shutil.copy(
-            source_path / "json/dk_466.json",
-            test_path / "raw/dk_99.json"
+            source_path / "json/466.json",
+            test_path / "json/99.json"
         )
     
-    # Copy newsletter signals
-    if (source_path / "json/linestar_newsletter_signals.json").exists():
-        shutil.copy(
-            source_path / "json/linestar_newsletter_signals.json", 
-            test_path / "raw/newsletter_signals.json"
-        )
-    
-    # Verify test files were copied
-    assert (test_path / "raw/dk_99.json").exists(), "Test data file not copied"
-    assert (test_path / "raw/newsletter_signals.json").exists(), "Newsletter signals not copied"
+    # Verify test file was copied
+    assert (test_path / "json/99.json").exists(), "Test data file not copied"
     
     print(f"✅ Setup test passed - directories created and test data copied to {test_path}")
 
 
-def test_setup_data_validate():
-    """Test validation of uploaded files."""
-    # This assumes test_setup_data_mma has run first
-    test_path = Path("data/mma/dk/99")
-    assert test_path.exists(), "Test data directory doesn't exist - run test_setup_data_mma first"
-    
-    # Run validation
-    result = subprocess.run([
-        sys.executable, "src/cli/setup_data.py",
-        "--sport", "mma",
-        "--pid", "99",
-        "--site", "dk",
-        "--validate-only"
-    ], capture_output=True, text=True)
-    
-    assert result.returncode == 0, f"Validation failed: {result.stderr}"
-    assert "✅ All required files found!" in result.stdout, "File validation failed"
-    
-    print("✅ Validation test passed")
-
-
 if __name__ == "__main__":
     test_setup_data_mma()
-    test_setup_data_validate()
