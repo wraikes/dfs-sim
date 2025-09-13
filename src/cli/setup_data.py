@@ -53,6 +53,23 @@ class DataSetupManager:
                 ],
                 'newsletter_file': 'newsletter_signals.json'
             },
+            'nascar': {
+                'name': 'NASCAR',
+                'linestar_sport_id': 9,  # NASCAR sport ID on LineStar
+                'site_ids': {
+                    'dk': 1,
+                    'fd': 2
+                },
+                'data_sources': [
+                    {
+                        'name': 'LineStar NASCAR Contest Data',
+                        'url_template': 'https://www.linestarapp.com/DesktopModules/DailyFantasyApi/API/Fantasy/GetSalariesV4?sport={sport_id}&site={site_id}&periodId={pid}',
+                        'file': 'raw.json',
+                        'description': 'NASCAR driver salaries, projections, ownership, and track data'
+                    }
+                ],
+                'newsletter_file': 'newsletter_signals.json'
+            },
             'nfl': {
                 'name': 'NFL',
                 'raw_files': ['salaries.csv', 'ownership.csv', 'projections.csv'],
@@ -237,7 +254,7 @@ def main():
     )
     
     parser.add_argument('--sport', type=str, required=True,
-                       choices=['mma', 'nfl', 'nba'],
+                       choices=['mma', 'nascar', 'nfl', 'nba'],
                        help='Sport to set up data for')
     parser.add_argument('--pid', type=str, required=True,
                        help='Contest/event identifier (e.g., 466 for UFC 466)')

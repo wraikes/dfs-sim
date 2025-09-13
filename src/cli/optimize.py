@@ -35,14 +35,15 @@ def create_optimizer(sport: str, players: List = None) -> BaseOptimizer:
     """Factory function to create sport-specific optimizer."""
     optimizers = {
         'mma': lambda: _import_mma_optimizer()(players or [], sport),
+        'nascar': lambda: _import_nascar_optimizer()(players or [], sport),
         # 'nfl': lambda: _import_nfl_optimizer()(players or [], sport),  # Future implementation
         # 'nba': lambda: _import_nba_optimizer()(players or [], sport),  # Future implementation
     }
-    
+
     optimizer_factory = optimizers.get(sport.lower())
     if not optimizer_factory:
         raise ValueError(f"Sport '{sport}' not yet supported")
-    
+
     return optimizer_factory()
 
 
@@ -50,6 +51,12 @@ def _import_mma_optimizer():
     """Import MMA optimizer to avoid circular imports."""
     from src.optimization.mma_optimizer import MMAOptimizer
     return MMAOptimizer
+
+
+def _import_nascar_optimizer():
+    """Import NASCAR optimizer to avoid circular imports."""
+    from src.optimization.nascar_optimizer import NASCAROptimizer
+    return NASCAROptimizer
 
 
 def load_processed_data(sport: str, pid: str, site: SiteCode = SiteCode.DK) -> pd.DataFrame:
@@ -195,7 +202,7 @@ def main():
     )
     
     parser.add_argument('--sport', type=str, required=True,
-                       choices=['mma', 'nfl', 'nba'],
+                       choices=['mma', 'nascar', 'nfl', 'nba'],
                        help='Sport to optimize lineups for')
     parser.add_argument('--pid', type=str, required=True,
                        help='Contest/event identifier')

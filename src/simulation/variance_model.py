@@ -101,18 +101,76 @@ class VarianceModel:
             variance_mult = self.position_variance.get(player.position, 0.25)
             std_dev = mean * variance_mult
         
-        # Apply fight competitiveness variance adjustment
-        ml_odds = getattr(player, 'ml_odds', 0)
-        opponent_ml_odds = getattr(player, 'opponent_ml_odds', 0)
-        
-        if ml_odds != 0 and opponent_ml_odds != 0:
-            odds_spread = abs(ml_odds - opponent_ml_odds)
-            if odds_spread < 100:  # Close fight
-                competitiveness_mult = 0.9  # Lower variance (more predictable)
-            else:  # Mismatch
-                competitiveness_mult = 1.1  # Higher variance (finish-likely)
-            
-            std_dev *= competitiveness_mult
+        # Sport-specific variance adjustments
+        if player.position == Position.FIGHTER:
+            # MMA: Apply fight competitiveness variance adjustment
+            ml_odds = getattr(player, 'ml_odds', 0)
+            opponent_ml_odds = getattr(player, 'opponent_ml_odds', 0)
+
+            if ml_odds != 0 and opponent_ml_odds != 0:
+                odds_spread = abs(ml_odds - opponent_ml_odds)
+                if odds_spread < 100:  # Close fight
+                    competitiveness_mult = 0.9  # Lower variance (more predictable)
+                else:  # Mismatch
+                    competitiveness_mult = 1.1  # Higher variance (finish-likely)
+
+                std_dev *= competitiveness_mult
+
+        elif player.position == Position.DRIVER:
+            # 🔥 ENHANCED NASCAR VARIANCE MODEL USING ALL NEW FEATURES 🔥
+            if hasattr(player, 'metadata'):
+                track_type = player.metadata.get('track_type', 'intermediate')
+                starting_position = player.metadata.get('starting_position', 20)
+
+                # Base track type variance multiplier
+                if track_type == 'superspeedway':
+                    std_dev *= 1.3  # Much higher variance (big wrecks, pack racing)
+                elif track_type == 'road':
+                    std_dev *= 0.9  # Lower variance (skill-based)
+
+                # 🔥 NEW: Position Advancement Consistency (using avg_pass_diff)
+                avg_pass_diff = player.metadata.get('avg_pass_diff', 0)
+                if abs(avg_pass_diff) > 5:  # Highly volatile position changes
+                    std_dev *= 1.15  # +15% variance for boom/bust drivers
+                elif abs(avg_pass_diff) < 2:  # Very consistent position
+                    std_dev *= 0.85  # -15% variance for steady drivers
+
+                # 🔥 NEW: Practice Performance Variance (using practice_lap_time)
+                practice_time = player.metadata.get('practice_lap_time', 15.5)
+                avg_practice_time = 15.5  # Approximate average for Bristol
+                if practice_time > avg_practice_time + 0.2:  # Struggled in practice
+                    std_dev *= 1.25  # +25% variance (setup issues, mechanical problems)
+                elif practice_time < avg_practice_time - 0.1:  # Fast in practice
+                    std_dev *= 0.90  # -10% variance (good setup, more predictable)
+
+                # 🔥 NEW: Track Specialist Adjustment (using bristol_avg_finish vs season avg)
+                bristol_avg = player.metadata.get('bristol_avg_finish', 20.0)
+                season_avg = player.metadata.get('avg_finish', 20.0)
+                track_advantage = season_avg - bristol_avg  # Positive = better at this track
+                if track_advantage > 3:  # Track specialist (3+ positions better)
+                    std_dev *= 0.80  # -20% variance (more predictable at specialty track)
+                elif track_advantage < -3:  # Track struggle (3+ positions worse)
+                    std_dev *= 1.30  # +30% variance (unpredictable at weak tracks)
+
+                # 🔥 NEW: Quality/Consistency Factor (using quality_passes_per_race)
+                quality_passes = player.metadata.get('quality_passes_per_race', 50)
+                if quality_passes > 65:  # High-quality, consistent driver
+                    std_dev *= 0.88  # -12% variance
+                elif quality_passes < 35:  # Inconsistent, erratic driver
+                    std_dev *= 1.18  # +18% variance
+
+                # 🔥 NEW: Speed vs Consistency Balance (using fastest_laps_per_race)
+                fastest_laps = player.metadata.get('fastest_laps_per_race', 5)
+                if fastest_laps > 10:  # Speed-focused driver (high risk/reward)
+                    std_dev *= 1.10  # +10% variance (goes for speed, more crashes)
+                elif fastest_laps < 3:  # Conservative driver
+                    std_dev *= 0.92  # -8% variance (plays it safe)
+
+                # Original starting position variance (enhanced)
+                if starting_position <= 5:
+                    std_dev *= 0.90  # Front runners more consistent
+                elif starting_position >= 25:
+                    std_dev *= 1.20  # Back of pack more volatile
         
         # Get distribution type
         dist_type = self.position_distributions.get(player.position, DistributionType.NORMAL)
