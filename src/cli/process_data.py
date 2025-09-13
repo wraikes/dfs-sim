@@ -1003,43 +1003,59 @@ class MMADataProcessor(BaseDataProcessor):
         df['win_pct'] = df['player_id'].map(win_pct_map).fillna(0)
         df['itd_odds'] = df['player_id'].map(itd_odds_map).fillna(0)
         
-        # Extract opponent relationships using OTEAM (opponent team) data
+        # Extract opponent relationships using OTEAM-to-lastname matching
         opponent_map = {}
         opponent_odds_map = {}
-        
-        # Group fighters by their OTEAM to find opponents
-        for i, row1 in df.iterrows():
-            if row1['player_id'] in opponent_map:
-                continue  # Already matched
-                
-            player1_id = row1['player_id']
-            player1_hteam = row1['hteam']
-            player1_oteam = row1['oteam']
-            
-            # Skip if no team data
-            if not player1_oteam or not player1_hteam:
+
+        # Create lastname-to-fighter mapping for OTEAM matching
+        lastname_to_fighter = {}
+        for _, row in df.iterrows():
+            # Extract last name (handle multi-part names like "Jose Daniel Medina")
+            last_name = row['name'].split()[-1].upper()
+            lastname_to_fighter[last_name] = {
+                'player_id': row['player_id'],
+                'name': row['name'],
+                'ml_odds': row['ml_odds']
+            }
+
+        # Match fighters to opponents using OTEAM values
+        matched_fighters = set()
+        for _, row in df.iterrows():
+            player_id = row['player_id']
+            player_oteam = row['oteam']
+
+            # Skip if already matched or no OTEAM data
+            if player_id in matched_fighters or not player_oteam:
                 continue
-                
-            # Find the fighter whose HTEAM matches our OTEAM
-            for j, row2 in df.iterrows():
-                if i >= j or row2['player_id'] in opponent_map:
-                    continue
-                    
-                player2_id = row2['player_id']
-                player2_hteam = row2['hteam']
-                player2_oteam = row2['oteam']
-                
-                # Skip if no team data
-                if not player2_oteam or not player2_hteam:
-                    continue
-                
-                # Check if they are opponents: player1's OTEAM = player2's HTEAM AND vice versa
-                if player1_oteam == player2_hteam and player1_hteam == player2_oteam:
-                    opponent_map[player1_id] = row2['name']
-                    opponent_map[player2_id] = row1['name']
-                    # Also store opponent odds for variance modeling
-                    opponent_odds_map[player1_id] = row2['ml_odds']
-                    opponent_odds_map[player2_id] = row1['ml_odds']
+
+            # Find opponent by matching OTEAM to fighter lastname
+            # Special handling for multi-word names like "DANIEL MEDINA"
+            potential_opponents = []
+
+            # First try exact OTEAM match
+            if player_oteam in lastname_to_fighter:
+                potential_opponents.append(lastname_to_fighter[player_oteam])
+
+            # For multi-word OTEAM like "DANIEL MEDINA", try to find "Jose Daniel Medina"
+            elif ' ' in player_oteam:
+                for fighter_name, fighter_data in lastname_to_fighter.items():
+                    full_fighter_name = fighter_data['name'].upper()
+                    if player_oteam in full_fighter_name:
+                        potential_opponents.append(fighter_data)
+
+            # Match with the first valid opponent found
+            for opponent_data in potential_opponents:
+                opponent_id = opponent_data['player_id']
+
+                # Don't match a fighter to themselves and ensure unique matching
+                if opponent_id != player_id and opponent_id not in matched_fighters:
+                    opponent_map[player_id] = opponent_data['name']
+                    opponent_odds_map[player_id] = opponent_data['ml_odds']
+                    opponent_map[opponent_id] = row['name']
+                    opponent_odds_map[opponent_id] = row['ml_odds']
+
+                    matched_fighters.add(player_id)
+                    matched_fighters.add(opponent_id)
                     break
         
         # Add opponent data to dataframe

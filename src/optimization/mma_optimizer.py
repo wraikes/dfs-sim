@@ -120,7 +120,7 @@ class MMAOptimizer(BaseOptimizer):
             player_id=int(row['player_id']),
             name=row['name'],
             position=Position.FIGHTER,
-            team=row.get('team', ''),
+            team=row.get('oteam', ''),  # Use OTEAM for team field
             opponent=row.get('opponent', ''),
             salary=int(row['salary']),
             projection=float(row['updated_projection']),

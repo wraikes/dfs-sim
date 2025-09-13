@@ -143,6 +143,7 @@ def _export_lineups_csv(lineups: List, output_dir: Path, pid: str, contest_type:
                 'lineup_id': i,
                 'position': j,
                 'player_name': player.name,
+                'oteam': player.team,  # OTEAM data (opponent team)
                 'salary': player.salary,
                 'projection': getattr(player, 'adjusted_projection', player.projection),
                 'ownership': getattr(player, 'adjusted_ownership', player.ownership),

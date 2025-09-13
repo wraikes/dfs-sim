@@ -57,24 +57,89 @@ def test_process_data(sport: str = "mma"):
     for col in newsletter_cols:
         assert col in df.columns, f"Missing newsletter column: {col}"
 
-    # Sport-specific column validation
-    sport_specific_cols = {
-        'mma': [
-            'finishing_rate', 'style_score', 'matchup_advantage', 'takedown_matchup',
-            'strikes_per_fight', 'strike_accuracy', 'takedowns_per_fight', 'itd_probability'
-        ],
-        'nascar': [
-            'starting_position', 'bristol_avg_finish', 'avg_pass_diff', 'quality_passes_per_race',
-            'fastest_laps_per_race', 'practice_lap_time', 'dominator_score', 'synthesized_floor'
-        ],
-        'nfl': [
-            'position', 'team', 'opponent', 'game_total', 'spread'  # Expected NFL columns
-        ]
+    # CRITICAL FIELD VALIDATION - these are essential for each sport and must not be lost during refactoring
+    critical_fields_by_sport = {
+        'mma': {
+            # Base MMA data extraction
+            'ml_odds': 'Moneyline odds from JSON',
+            'itd_probability': 'Inside The Distance probability calculation',
+            'takedowns_per_fight': 'Takedown statistics from JSON',
+            'takedown_defense': 'Takedown defense percentage',
+            'strikes_per_fight': 'Striking volume statistics',
+            'strike_accuracy': 'Striking accuracy percentage',
+
+            # Our calculated MMA features (critical for optimization)
+            'finishing_rate': 'Fight finishing calculation method',
+            'style_score': 'Fighting style score calculation',
+            'matchup_advantage': 'Head-to-head matchup calculation',
+            'takedown_matchup': 'Opponent-based takedown matchup score',
+        },
+        'nascar': {
+            # Essential NASCAR data from 6 JSON tables
+            'starting_position': 'Qualifying position from pmatchup table',
+            'practice_lap_time': 'Practice performance from pmatchup table',
+            'bristol_avg_finish': 'Track-specific performance from tmatchup table',
+            'avg_pass_diff': 'Position advancement from dSeason table',
+            'quality_passes_per_race': 'Passing ability from dSeason table',
+            'fastest_laps_per_race': 'Speed consistency from dSeason table',
+
+            # Our calculated NASCAR features (critical for correlations/variance)
+            'position_differential': 'Starting position vs target calculation',
+            'dominator_score': 'Lap-leading potential calculation',
+            'synthesized_floor': 'DNF risk-based floor calculation',
+            'variance_multiplier': 'Position-based variance adjustment',
+        },
+        'nfl': {
+            # Expected NFL critical fields (when implemented)
+            'position': 'Player position from roster data',
+            'team': 'Team affiliation for stacking',
+            'opponent': 'Opposing team for correlation',
+            'game_total': 'Vegas game total for environment',
+            'target_share': 'Receiving target percentage',
+        }
     }
 
-    if sport in sport_specific_cols:
-        for col in sport_specific_cols[sport]:
-            assert col in df.columns, f"Missing {sport}-specific column: {col}"
+    # Validate critical fields exist and have realistic values
+    if sport in critical_fields_by_sport:
+        critical_fields = critical_fields_by_sport[sport]
+        missing_critical = []
+
+        print(f"\n🔍 Validating {len(critical_fields)} critical {sport.upper()} fields:")
+
+        for field, description in critical_fields.items():
+            if field not in df.columns:
+                missing_critical.append(f"{field} ({description})")
+                print(f"  ❌ MISSING CRITICAL: {field} - {description}")
+            else:
+                # Check field has meaningful data (not all zeros/nulls)
+                non_null_count = df[field].notna().sum()
+                has_variation = df[field].nunique() > 1
+                sample_val = df[field].iloc[0] if non_null_count > 0 else 'NULL'
+
+                if non_null_count == 0:
+                    print(f"  ⚠️  {field}: ALL NULL - {description}")
+                elif not has_variation and df[field].iloc[0] == 0:
+                    print(f"  ⚠️  {field}: ALL ZEROS - {description}")
+                else:
+                    print(f"  ✅ {field}: {sample_val} ({non_null_count}/{len(df)} valid) - {description}")
+
+        # Fail test if critical fields are missing
+        assert len(missing_critical) == 0, f"CRITICAL {sport.upper()} FIELDS MISSING: {missing_critical}"
+
+        print(f"✅ All {len(critical_fields)} critical {sport.upper()} fields validated!")
+
+    # Additional sport-specific columns (nice to have)
+    additional_cols = {
+        'mma': ['hteam', 'oteam', 'fight_card_position'],
+        'nascar': ['track_type', 'dnf_pct', 'recent_avg_finish'],
+        'nfl': ['snap_count', 'red_zone_targets', 'air_yards']
+    }
+
+    if sport in additional_cols:
+        for col in additional_cols[sport]:
+            if col in df.columns:
+                print(f"  📊 Bonus field present: {col}")
+            # Don't fail test for missing bonus fields
 
     # Data type validation
     assert df['salary'].dtype in ['int64', 'float64'], "Salary should be numeric"
@@ -99,8 +164,6 @@ def test_process_data(sport: str = "mma"):
 
     print(f"✅ {sport.upper()} process data test passed - {len(df)} players processed")
     print(f"   Newsletter signals: {dict(signal_counts)}")
-    if sport in sport_specific_cols:
-        print(f"   {sport.upper()}-specific columns verified: {len(sport_specific_cols[sport])} columns")
 
     return df
 
