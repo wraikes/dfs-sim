@@ -225,6 +225,8 @@ def main():
                        help='Export format (default: csv)')
     parser.add_argument('--summary-only', action='store_true',
                        help='Only display summary of existing lineups')
+    parser.add_argument('--consensus', action='store_true',
+                       help='Use multi-seed consensus mode for perfect determinism (single lineup only)')
     
     args = parser.parse_args()
     
@@ -310,7 +312,17 @@ def main():
         # Generate optimized lineups
         print(f"\n5️⃣ Optimizing lineups...")
         opt_start = time.time()
-        lineups = optimizer.optimize_lineups(args.entries)
+
+        # Check if consensus mode is requested (only for single lineup)
+        if args.consensus and args.entries == 1:
+            lineups = optimizer.optimize_lineups(args.entries, use_consensus=True)
+        elif args.consensus and args.entries > 1:
+            print("⚠️  Consensus mode only supports single lineup generation (--entries 1)")
+            print("    Falling back to standard optimization...")
+            lineups = optimizer.optimize_lineups(args.entries)
+        else:
+            lineups = optimizer.optimize_lineups(args.entries)
+
         opt_time = time.time() - opt_start
         
         print(f"   ✅ Generated {len(lineups)} lineups in {opt_time:.1f}s")

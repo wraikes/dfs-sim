@@ -298,8 +298,15 @@ class BaseOptimizer(ABC):
         """Generate a single candidate lineup."""
         pass
     
-    def optimize_lineups(self, num_lineups: int = 20) -> List[BaseLineup]:
-        """Main optimization pipeline with deterministic robust selection."""
+    def optimize_lineups(self, num_lineups: int = 20, use_consensus: bool = False) -> List[BaseLineup]:
+        """Main optimization pipeline with optional multi-seed consensus."""
+        if use_consensus and num_lineups == 1:
+            return self._optimize_with_consensus()
+        else:
+            return self._optimize_standard(num_lineups)
+
+    def _optimize_standard(self, num_lineups: int) -> List[BaseLineup]:
+        """Standard optimization pipeline with deterministic robust selection."""
         print(f"\n🚀 Generating {num_lineups} {self.sport.upper()} GPP lineups...")
         print("=" * 60)
 
@@ -328,6 +335,76 @@ class BaseOptimizer(ABC):
         print(f"✅ Selected {len(final_lineups)} optimized lineups")
         return final_lineups
 
+    def _optimize_with_consensus(self) -> List[BaseLineup]:
+        """Multi-seed consensus optimization for perfect determinism."""
+        import random
+        from collections import Counter
+
+        print(f"\n🎯 Generating consensus {self.sport.upper()} lineup using multi-seed approach...")
+        print("=" * 80)
+        print("Running 25 seeds × 25,000 simulations = 625,000 total simulations")
+        print("=" * 80)
+
+        # Store original simulation count and field
+        original_n_sims = self.simulator.n_simulations
+        original_field = self.field
+
+        # Set parameters for consensus runs
+        self.simulator.n_simulations = 25000
+        consensus_seeds = list(range(1, 26))  # Seeds 1-25
+        all_lineups = []
+
+        for i, seed in enumerate(consensus_seeds, 1):
+            print(f"🎲 Seed {seed:2d}/25 ({i*4:3d}% complete)...")
+
+            # Set seed for reproducibility
+            random.seed(seed)
+            np.random.seed(seed)
+
+            # Reset field for this seed
+            self.field = []
+
+            # Run single optimization
+            candidates = self.generate_lineup_candidates(200)
+
+            # Score candidates
+            for lineup in candidates:
+                lineup.gpp_score = self._score_lineup_gpp(lineup)
+
+            # Get best lineup using deterministic selection
+            best_candidates = self._apply_deterministic_selection(candidates, 1)
+            if best_candidates:
+                best_lineup = best_candidates[0]
+                lineup_signature = tuple(sorted(p.player_id for p in best_lineup.players))
+                all_lineups.append((lineup_signature, best_lineup))
+
+        # Restore original settings
+        self.simulator.n_simulations = original_n_sims
+        self.field = original_field
+
+        # Find consensus lineup
+        lineup_counts = Counter(sig for sig, _ in all_lineups)
+        most_common_sig, frequency = lineup_counts.most_common(1)[0]
+
+        print(f"\n🏆 CONSENSUS RESULTS")
+        print("=" * 50)
+        print(f"Most common lineup appeared: {frequency}/25 times ({frequency/25*100:.1f}%)")
+
+        # Get the actual lineup object for the consensus signature
+        consensus_lineup = None
+        for sig, lineup in all_lineups:
+            if sig == most_common_sig:
+                consensus_lineup = lineup
+                break
+
+        if consensus_lineup:
+            self.generated_lineups.append(consensus_lineup)
+            print(f"✅ Selected consensus lineup with {frequency}/25 seed agreement")
+            return [consensus_lineup]
+        else:
+            print("❌ Error: Could not find consensus lineup")
+            return []
+
     def _apply_deterministic_selection(self, candidates: List[BaseLineup],
                                        target_lineups: int) -> List[BaseLineup]:
         """Apply simple deterministic selection from equivalent lineups."""
@@ -349,10 +426,10 @@ class BaseOptimizer(ABC):
             -(x.total_projection / x.total_salary * 1000),  # 2nd: Highest salary efficiency
             x.total_salary,                                 # 3rd: Lowest total salary (more savings)
             -x.total_projection,                            # 4th: Highest total projection (negative for desc)
-            tuple(sorted(p.ownership for p in x.players)), # 5th: Player ownership pattern
-            tuple(sorted(p.salary for p in x.players)),    # 6th: Player salary pattern
-            tuple(sorted(p.adjusted_projection for p in x.players)), # 7th: Player projection pattern
-            tuple(sorted(p.player_id for p in x.players))  # 8th: Final deterministic ID-based tiebreaker
+            tuple(sorted(p.ownership for p in x.players)), # 6th: Player ownership pattern
+            tuple(sorted(p.salary for p in x.players)),    # 7th: Player salary pattern
+            tuple(sorted(p.adjusted_projection for p in x.players)), # 8th: Player projection pattern
+            tuple(sorted(p.player_id for p in x.players))  # 9th: Final deterministic ID-based tiebreaker
         ))
 
         # If we need more lineups than equivalent ones, add the rest sorted by GPP score
