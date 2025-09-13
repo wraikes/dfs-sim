@@ -239,9 +239,45 @@ class BaseDataProcessor(ABC):
         df['updated_floor'] = np.maximum(df['updated_floor'], 0)
         df['updated_ceiling'] = np.maximum(df['updated_ceiling'], df['updated_projection'])
         
+        # Apply takedown matchup ceiling adjustments
+        print("   🤼 Applying takedown matchup ceiling adjustments...")
+        df = self._apply_takedown_ceiling_adjustments(df)
+        
         # Apply salary-ownership correlation model (50/50 weighting)
         print("   💰 Applying salary-ownership correlation model...")
         df = self._apply_salary_ownership_correlation(df)
+        
+        return df
+    
+    def _apply_takedown_ceiling_adjustments(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Apply ceiling adjustments based on takedown matchup disadvantages."""
+        df = df.copy()
+        
+        for idx, row in df.iterrows():
+            takedown_matchup = row['takedown_matchup']
+            
+            # If opponent will dominate takedowns (high score), suppress ceiling
+            if takedown_matchup > 5.0:  # Opponent gets 5+ takedowns vs player's defense
+                # Severe ceiling suppression for terrible matchups
+                ceiling_reduction = min(0.40, (takedown_matchup - 5) * 0.08)  # Up to 40% reduction
+                df.loc[idx, 'updated_ceiling'] *= (1 - ceiling_reduction)
+                
+            elif takedown_matchup > 3.0:  # Moderate takedown disadvantage
+                # Moderate ceiling suppression
+                ceiling_reduction = min(0.25, (takedown_matchup - 3) * 0.10)  # Up to 25% reduction
+                df.loc[idx, 'updated_ceiling'] *= (1 - ceiling_reduction)
+                
+            elif takedown_matchup > 1.5:  # Slight takedown disadvantage
+                # Minor ceiling suppression
+                ceiling_reduction = min(0.15, (takedown_matchup - 1.5) * 0.08)  # Up to 15% reduction
+                df.loc[idx, 'updated_ceiling'] *= (1 - ceiling_reduction)
+        
+        # Display notable adjustments
+        severe_disadvantages = df[df['takedown_matchup'] > 5.0]
+        if not severe_disadvantages.empty:
+            print(f"      🚨 Severe takedown disadvantages: {len(severe_disadvantages)} fighters")
+            for _, fighter in severe_disadvantages.iterrows():
+                print(f"         {fighter['name']}: {fighter['takedown_matchup']:.1f} TD matchup")
         
         return df
     
@@ -282,6 +318,33 @@ class BaseDataProcessor(ABC):
         print(f"      Improvement: {new_corr - orig_corr:+.3f}")
         
         return df
+    
+    def _calculate_takedown_matchup(self, df: pd.DataFrame) -> pd.Series:
+        """Calculate proper opponent-based takedown matchup scores."""
+        takedown_scores = []
+        
+        for _, row in df.iterrows():
+            player_td_defense = row['takedown_defense']
+            opponent_team = row.get('oteam', '')  # Use opponent team field
+            
+            if opponent_team:
+                # Find opponent using team-based matching
+                opponent_row = df[df['hteam'] == opponent_team]
+                if not opponent_row.empty:
+                    opp_td_per_fight = opponent_row.iloc[0]['takedowns_per_fight']
+                    
+                    # Calculate actual matchup: opponent TD rate vs player TD defense
+                    # Higher score = opponent will dominate takedowns (bad for player ceiling)
+                    matchup_score = opp_td_per_fight / (player_td_defense / 100 + 0.1)
+                    takedown_scores.append(matchup_score)
+                else:
+                    # No opponent found, use self-referential as fallback
+                    takedown_scores.append(row['takedowns_per_fight'] / (100 - player_td_defense + 1))
+            else:
+                # No opponent team listed, use self-referential as fallback
+                takedown_scores.append(row['takedowns_per_fight'] / (100 - player_td_defense + 1))
+        
+        return pd.Series(takedown_scores, index=df.index)
     
     def process_data(self) -> pd.DataFrame:
         """Main data processing pipeline."""
@@ -595,7 +658,8 @@ class MMADataProcessor(BaseDataProcessor):
         df['finishing_rate'] = df.apply(lambda row: max(0, 3 - row['avg_rounds']) / 3 if row['avg_rounds'] > 0 else 0.33, axis=1)
         df['style_score'] = df['strikes_per_min'] / (df['takedowns_per_fight'] + 0.1)  # Striker vs grappler indicator
         df['matchup_advantage'] = df['strike_accuracy'] - df['opp_strike_accuracy']  # Striking matchup edge
-        df['takedown_matchup'] = df['takedowns_per_fight'] / (100 - df['takedown_defense'] + 1)  # Takedown vs TDD
+        # Calculate proper opponent-based takedown matchup
+        df['takedown_matchup'] = self._calculate_takedown_matchup(df)
         
         # Calculate ITD probability from ML odds and finishing rate
         df['itd_probability'] = 0.35  # Default
