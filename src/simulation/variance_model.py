@@ -68,6 +68,9 @@ class VarianceModel:
                 Position.GOLFER: 0.40,
                 Position.DRIVER: 0.45,
                 Position.FIGHTER: 0.70,  # Extreme variance for MMA (KOs, subs, decisions)
+
+                # Enhanced NASCAR variance based on track type and starting position
+                Position.DRIVER: 0.45,  # Base NASCAR variance - will be adjusted by track type
             }
         
         if self.position_distributions is None:

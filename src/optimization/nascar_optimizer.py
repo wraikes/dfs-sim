@@ -361,28 +361,50 @@ class NASCAROptimizer(BaseOptimizer):
                     mid_tier = [p for p in self.players if 13 <= p.metadata.get('starting_position', 99) <= 17]
                     pd_plays = [p for p in self.players if p.metadata.get('starting_position', 99) >= 18]
 
-                    # 1-2 dominators from P1-P12
+                    # 1-2 dominators from P1-P12, prioritizing dominator score + ownership leverage
                     num_dominators = random.choice([1, 2])
                     if dominators:
-                        # Prefer lower-owned dominators for leverage
-                        dom_sorted = sorted(dominators, key=lambda x: x.ownership)
-                        selected.extend(random.sample(dom_sorted, min(num_dominators, len(dom_sorted))))
+                        # Sort by combined dominator score and ownership leverage
+                        # Higher dominator score is better, lower ownership is better
+                        dom_sorted = sorted(dominators, key=lambda x: (-x.metadata.get('dominator_score', 0), x.ownership))
+
+                        # Select from top dominator candidates with some randomization for diversity
+                        if random.random() < 0.7:  # 70% chance for pure dominator score selection
+                            top_dominators = dom_sorted[:min(6, len(dom_sorted))]  # Top 6 dominator candidates
+                        else:  # 30% chance for ownership-first selection (more contrarian)
+                            top_dominators = sorted(dominators, key=lambda x: (x.ownership, -x.metadata.get('dominator_score', 0)))[:6]
+
+                        selected.extend(random.sample(top_dominators, min(num_dominators, len(top_dominators))))
 
                     # 1-2 mid-tier drivers
                     num_mid = random.choice([1, 2])
                     if mid_tier:
                         selected.extend(random.sample(mid_tier, min(num_mid, len(mid_tier))))
 
-                    # Fill rest with PD plays (need at least 3 from P18+)
+                    # Fill rest with PD plays (need at least 3 from P18+) - prioritize upside + leverage
                     remaining_slots = 6 - len(selected)
                     if pd_plays and remaining_slots > 0:
-                        # Mix low-owned with high-upside PD plays
-                        pd_sorted = sorted(pd_plays, key=lambda x: (x.ownership, -x.metadata.get('pd_upside', 0)))
-                        if remaining_slots >= 2:
-                            selected.append(pd_sorted[0])  # Lowest owned PD play
-                            selected.extend(random.sample(pd_sorted[1:], min(remaining_slots - 1, len(pd_sorted) - 1)))
+                        # Sort by PD upside potential and ownership leverage
+                        # Higher PD upside is better, lower ownership is better
+                        pd_sorted = sorted(pd_plays, key=lambda x: (-x.metadata.get('pd_upside', 0), x.ownership))
+
+                        # Strategy: Mix high-upside with some randomization for diversity
+                        if remaining_slots >= 2 and len(pd_sorted) >= 2:
+                            # 80% chance to take the best PD upside play
+                            if random.random() < 0.8:
+                                selected.append(pd_sorted[0])  # Best PD upside play
+                                remaining_slots -= 1
+
+                            # Select from expanded PD candidates for diversity
+                            pd_candidates = pd_sorted[:min(12, len(pd_sorted))]  # Top 12 PD plays
+                            remaining_needed = min(remaining_slots, len([p for p in pd_candidates if p not in selected]))
+                            if remaining_needed > 0:
+                                available_pd = [p for p in pd_candidates if p not in selected]
+                                selected.extend(random.sample(available_pd, remaining_needed))
                         else:
-                            selected.extend(random.sample(pd_plays, min(remaining_slots, len(pd_plays))))
+                            # Select from expanded PD upside candidates for more diversity
+                            top_pd = pd_sorted[:min(10, len(pd_sorted))]
+                            selected.extend(random.sample(top_pd, min(remaining_slots, len(top_pd))))
 
                 # Fill to 6 drivers if needed
                 while len(selected) < 6:

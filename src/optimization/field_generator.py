@@ -100,28 +100,45 @@ class MMAFieldGenerator(BaseFieldGenerator):
         return False
     
     def _select_by_ownership_probability(self, available: List[Player], n: int = 1) -> List[Player]:
-        """Select players weighted by ownership probability."""
+        """Enhanced ownership probability selection with realistic field modeling."""
         if not available or n <= 0:
             return []
-        
-        # Normalize ownership to probabilities
+
+        # Get ownership values
         ownerships = np.array([p.ownership for p in available])
-        
-        # Add small epsilon to avoid zero probability
-        ownerships = np.maximum(ownerships, 0.1)
-        
+
+        # Enhanced ownership probability modeling
+        # Real DFS players don't select exactly proportional to ownership - they have biases
+
+        # Add base probability floor (even 0% owned players get selected sometimes)
+        base_prob = 0.1
+        ownerships = np.maximum(ownerships, base_prob)
+
+        # Apply diminishing returns to high ownership (reduces chalk stacking)
+        # Players > 50% owned don't scale linearly in selection
+        ownership_adjusted = np.where(
+            ownerships > 50,
+            50 + (ownerships - 50) * 0.6,  # 60% scaling above 50%
+            ownerships
+        )
+
+        # Add small random noise to simulate imperfect ownership prediction
+        noise_factor = 0.15  # 15% noise
+        noise = np.random.normal(1.0, noise_factor, len(ownership_adjusted))
+        ownership_adjusted *= np.maximum(noise, 0.1)  # Keep positive
+
         # Convert to selection probabilities
-        probabilities = ownerships / ownerships.sum()
-        
+        probabilities = ownership_adjusted / ownership_adjusted.sum()
+
         # Select without replacement
         n = min(n, len(available))
         selected_indices = np.random.choice(
-            len(available), 
-            size=n, 
-            replace=False, 
+            len(available),
+            size=n,
+            replace=False,
             p=probabilities
         )
-        
+
         return [available[i] for i in selected_indices]
     
     def _generate_lineup_by_strategy(self, strategy: str) -> FieldLineup:
