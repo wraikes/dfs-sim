@@ -208,6 +208,10 @@ def main():
                        help='Number of Monte Carlo simulations (default: 25,000)')
     parser.add_argument('--cash-game', action='store_true',
                        help='Optimize for cash games (50/50s) instead of GPPs')
+    parser.add_argument('--seed', type=int, default=None,
+                       help='Random seed for reproducible results')
+    parser.add_argument('--debug-scoring', action='store_true',
+                       help='Enable detailed scoring component logging')
     parser.add_argument('--export-format', type=str, default='csv',
                        choices=['csv', 'dk'],
                        help='Export format (default: csv)')
@@ -218,12 +222,28 @@ def main():
     
     print("🎯 DFS LINEUP OPTIMIZER")
     print("=" * 60)
+    # Set random seed for reproducibility
+    if args.seed is not None:
+        import random
+        import numpy as np
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        seed_msg = f"Seed: {args.seed}"
+    else:
+        import random
+        import numpy as np
+        seed = int(time.time())
+        random.seed(seed)
+        np.random.seed(seed)
+        seed_msg = f"Seed: {seed} (auto-generated)"
+    
     print(f"Sport: {args.sport.upper()}")
     print(f"PID: {args.pid}")
     print(f"Site: {args.site.upper()}")
     print(f"Entries: {args.entries}")
     print(f"Simulations: {args.simulations:,}")
     print(f"Contest Type: {'Cash Game' if args.cash_game else 'GPP Tournament'}")
+    print(f"{seed_msg}")
     print("=" * 60)
     
     try:
@@ -252,6 +272,7 @@ def main():
         optimizer = create_optimizer(args.sport)
         optimizer.load_players_from_dataframe(df)
         optimizer.cash_game_mode = args.cash_game
+        optimizer._debug_scoring = args.debug_scoring
         
         print(f"   ✅ Loaded {len(optimizer.players)} players")
         

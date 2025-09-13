@@ -64,11 +64,7 @@ class BaseDataProcessor(ABC):
     def process_newsletter_with_llm(self) -> Optional[NewsletterExtraction]:
         """Process newsletter using LLM and create structured signals."""
         # Initialize LLM processor
-        # Use GPT-4 for production (unless TEST_MODE is set)
-        # Note: GPT-5 requires organization verification
-        is_test = os.getenv('TEST_MODE', '').lower() == 'true'
-        model = "gpt-4o-mini" if is_test else "gpt-4"
-        llm_processor = LLMNewsletterProcessor(sport=self.sport, model=model)
+        llm_processor = LLMNewsletterProcessor(sport=self.sport, model="gpt-4o")
         
         # Look for newsletter files in the /newsletters subdirectory
         newsletter_dir = self.base_path / 'newsletters'
@@ -223,6 +219,67 @@ class BaseDataProcessor(ABC):
                 # Higher ceiling for dogs (upset potential)
                 ceiling_boost = (1 - win_prob) * 0.20  # Up to 20% boost for heavy dogs
                 df.loc[idx, 'updated_ceiling'] *= (1 + ceiling_boost)
+        
+        # Apply bounds validation after all adjustments
+        print("   🔒 Applying bounds validation...")
+        
+        # Clamp ownership to [0, 100]
+        df['updated_ownership'] = np.clip(df['updated_ownership'], 0, 100)
+        
+        # Ensure ceiling >= projection
+        mask = df['updated_ceiling'] < df['updated_projection']
+        df.loc[mask, 'updated_ceiling'] = df.loc[mask, 'updated_projection'] * 1.1  # Min 10% ceiling buffer
+        
+        # Ensure floor <= projection
+        mask = df['updated_floor'] > df['updated_projection']
+        df.loc[mask, 'updated_floor'] = df.loc[mask, 'updated_projection'] * 0.8  # Max 80% floor
+        
+        # Ensure all values are non-negative
+        df['updated_projection'] = np.maximum(df['updated_projection'], 0.1)
+        df['updated_floor'] = np.maximum(df['updated_floor'], 0)
+        df['updated_ceiling'] = np.maximum(df['updated_ceiling'], df['updated_projection'])
+        
+        # Apply salary-ownership correlation model (50/50 weighting)
+        print("   💰 Applying salary-ownership correlation model...")
+        df = self._apply_salary_ownership_correlation(df)
+        
+        return df
+    
+    def _apply_salary_ownership_correlation(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Apply salary-ownership correlation model with 50/50 weighting."""
+        df = df.copy()
+        
+        # Calculate salary-based ownership expectations
+        # Higher salary players should have higher ownership (positive correlation)
+        min_salary = df['salary'].min()
+        max_salary = df['salary'].max()
+        salary_range = max_salary - min_salary
+        
+        if salary_range > 0:
+            # Normalize salaries to 0-1 range
+            normalized_salary = (df['salary'] - min_salary) / salary_range
+            
+            # Convert to ownership expectations (2% to 20% range based on salary)
+            # Higher salary = higher ownership expectation (realistic for MMA)
+            salary_based_ownership = 2 + (normalized_salary * 18)
+        else:
+            # If all salaries are the same, use uniform ownership
+            salary_based_ownership = pd.Series([15.0] * len(df), index=df.index)
+        
+        # Create blended ownership with 50/50 weighting
+        original_ownership = df['updated_ownership']
+        blended_ownership = (0.5 * original_ownership) + (0.5 * salary_based_ownership)
+        
+        # Ensure bounds [0.1, 100]
+        df['salary_ownership'] = np.clip(blended_ownership, 0.1, 100.0)
+        
+        # Calculate correlation improvement
+        orig_corr = df['salary'].corr(df['updated_ownership'])
+        new_corr = df['salary'].corr(df['salary_ownership'])
+        
+        print(f"      Original salary-ownership correlation: {orig_corr:.3f}")
+        print(f"      Enhanced salary-ownership correlation: {new_corr:.3f}")
+        print(f"      Improvement: {new_corr - orig_corr:+.3f}")
         
         return df
     

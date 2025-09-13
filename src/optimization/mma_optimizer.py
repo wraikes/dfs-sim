@@ -72,10 +72,10 @@ class MMAOptimizer(BaseOptimizer):
             for j, p2 in enumerate(players):
                 if i >= j:
                     continue
-                if p1.opponent and (p1.opponent.upper() == p2.name.upper() or
+                if p1.opponent and isinstance(p1.opponent, str) and (p1.opponent.upper() == p2.name.upper() or
                                    p1.opponent.upper() in p2.name.upper()):
                     return True
-                if p2.opponent and p2.opponent.upper() == p1.name.upper():
+                if p2.opponent and isinstance(p2.opponent, str) and p2.opponent.upper() == p1.name.upper():
                     return True
         return False
     
@@ -84,9 +84,11 @@ class MMAOptimizer(BaseOptimizer):
         if len(players) != 6:
             return False
         
-        # Check salary constraints
+        # Check salary constraints using defined limits
         total_salary = sum(p.salary for p in players)
-        if total_salary > 50000 or total_salary < 48800:
+        salary_remaining = self.constraints.salary_cap - total_salary
+        if (salary_remaining > self.constraints.max_salary_remaining or 
+            salary_remaining < self.constraints.min_salary_remaining):
             return False
         
         # Check no opponents rule
@@ -122,7 +124,7 @@ class MMAOptimizer(BaseOptimizer):
             opponent=row.get('opponent', ''),
             salary=int(row['salary']),
             projection=float(row['updated_projection']),
-            ownership=float(row['updated_ownership']),
+            ownership=float(row.get('salary_ownership', row['updated_ownership'])),
             floor=float(row['updated_floor']),
             ceiling=float(row['updated_ceiling']),
             std_dev=float(row.get('std_dev', 25.0)),
@@ -139,7 +141,7 @@ class MMAOptimizer(BaseOptimizer):
             'itd_adjusted_ceiling': float(row.get('itd_adjusted_ceiling', player.ceiling)),
             'newsletter_signal': row.get('newsletter_signal', 'neutral'),
             'newsletter_confidence': float(row.get('newsletter_confidence', 0.5)),
-            'base_ownership': float(row.get('original_ownership', player.ownership))
+            'base_ownership': float(row.get('updated_ownership', player.ownership))
         }
         
         return player
@@ -223,8 +225,8 @@ class MMAOptimizer(BaseOptimizer):
                 # Check for opponents
                 valid = True
                 for existing in players:
-                    if (fighter.opponent and fighter.opponent.upper() == existing.name.upper()) or \
-                       (existing.opponent and existing.opponent.upper() == fighter.name.upper()):
+                    if (fighter.opponent and isinstance(fighter.opponent, str) and fighter.opponent.upper() == existing.name.upper()) or \
+                       (existing.opponent and isinstance(existing.opponent, str) and existing.opponent.upper() == fighter.name.upper()):
                         valid = False
                         break
                 
@@ -294,17 +296,39 @@ class MMAOptimizer(BaseOptimizer):
             gpp_score = ceiling_score + leverage_score + uniqueness_score + diversity_score - ownership_penalty
         
         # MMA-specific bonuses
+        mma_bonuses = 0
         if isinstance(lineup, MMALineup):
             if lineup.num_prelim_fighters >= 2:
-                gpp_score += 5  # Prelim exposure bonus
+                mma_bonuses += 5  # Prelim exposure bonus
             
             if lineup.num_leverage_plays >= 3:
-                gpp_score += 10  # Extreme leverage bonus
+                mma_bonuses += 10  # Extreme leverage bonus
             
             if lineup.has_main_event_pair:
-                gpp_score -= 15  # Penalty for main event chalk
+                mma_bonuses -= 15  # Penalty for main event chalk
         
-        return gpp_score
+        final_score = gpp_score + mma_bonuses
+        
+        # Log detailed scoring components for transparency
+        if hasattr(self, '_debug_scoring') and self._debug_scoring:
+            print(f"🔍 LINEUP SCORING BREAKDOWN:")
+            if self.cash_game_mode:
+                print(f"   Consistency (70%): {consistency_score:.1f}")
+                print(f"   Leverage (5%): {leverage_score:.1f}")
+                print(f"   Uniqueness (0%): {uniqueness_score:.1f}")
+                print(f"   Diversity (5%): {diversity_score:.1f}")
+                print(f"   Ownership Penalty: -{ownership_penalty:.1f}")
+            else:
+                print(f"   Ceiling (40%): {ceiling_score:.1f}")
+                print(f"   Leverage (25%): {leverage_score:.1f}")
+                print(f"   Uniqueness (20%): {uniqueness_score:.1f}")
+                print(f"   Diversity (10%): {diversity_score:.1f}")
+                print(f"   Ownership Penalty: -{ownership_penalty:.1f}")
+            print(f"   MMA Bonuses: {mma_bonuses:.1f}")
+            print(f"   FINAL SCORE: {final_score:.1f}")
+            print()
+        
+        return final_score
     
     def _calculate_leverage_score(self, lineup: BaseLineup) -> float:
         """Calculate leverage score for MMA lineup."""

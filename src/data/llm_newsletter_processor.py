@@ -40,7 +40,7 @@ class NewsletterExtraction:
 class LLMNewsletterProcessor:
     """Process newsletter content using LLM to extract structured signals."""
     
-    def __init__(self, sport: str, model: str = "gpt-4o-mini"):
+    def __init__(self, sport: str, model: str = "gpt-4o"):
         """
         Initialize LLM processor.
         
@@ -84,6 +84,10 @@ class LLMNewsletterProcessor:
         system_prompt = self._build_system_prompt()
         
         try:
+            print(f"   🤖 Using model: {self.model}")
+            print(f"   📏 System prompt tokens: ~{len(system_prompt.split())}")
+            print(f"   📄 Newsletter tokens: ~{len(newsletter_text.split())}")
+            
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
@@ -149,8 +153,8 @@ EXTRACTION RULES:
    - Mild mention/balanced view ("could work", "maybe"): 0.3-0.4
 
 3. Base delta directions by signal type:
-   - POSITIVE (target): ceiling_delta = +0.12 * confidence, ownership_delta = -0.15 * confidence  
-   - NEGATIVE (avoid): ceiling_delta = -0.12 * confidence, ownership_delta = +0.15 * confidence
+   - POSITIVE (target): ceiling_delta = +0.12 * confidence, ownership_delta = +0.15 * confidence  
+   - NEGATIVE (avoid): ceiling_delta = -0.12 * confidence, ownership_delta = -0.15 * confidence
 
 4. Sport context for {self.sport.upper()}:
    - Positions: {context.get('position_types', ['Player'])}
@@ -175,10 +179,10 @@ Focus on extracting actionable DFS signals, not general game analysis.'''
             # Calculate deltas based on confidence and signal type
             if signal_type == 'target':
                 ceiling_delta = 0.07 * confidence  # Max +0.063 at 0.9 confidence
-                ownership_delta = -0.10 * confidence  # Max -0.09 at 0.9 confidence  
+                ownership_delta = 0.10 * confidence  # Max +0.09 at 0.9 confidence (targets get MORE ownership)
             elif signal_type == 'avoid':
                 ceiling_delta = -0.07 * confidence  # Max -0.063 at 0.9 confidence
-                ownership_delta = 0.10 * confidence  # Max +0.09 at 0.9 confidence
+                ownership_delta = -0.10 * confidence  # Max -0.09 at 0.9 confidence (avoids get LESS ownership)
             else:
                 ceiling_delta = 0.0
                 ownership_delta = 0.0
@@ -214,25 +218,42 @@ Focus on extracting actionable DFS signals, not general game analysis.'''
         Returns:
             List of Player objects with signals applied
         """
-        # Create lookup map for efficient matching
+        # Create ID mapping from CSV for reliable matching
+        id_to_name = {str(p.player_id): p.name.lower().strip() for p in players}
+        name_to_id = {name: pid for pid, name in id_to_name.items()}
+        
+        # Create lookup maps for efficient matching
         signal_map = {}
+        signal_id_map = {}  # New: map by player_id if available
+        
         for signal in extraction.players:
             # Store both exact name and normalized name
             exact_key = signal.name.lower().strip()
             signal_map[exact_key] = signal
+            
+            # If we can find the player_id from name, store ID mapping
+            if exact_key in name_to_id:
+                player_id = name_to_id[exact_key]
+                signal_id_map[player_id] = signal
             
             # Also store lastname-firstname combinations for better matching
             parts = signal.name.split()
             if len(parts) >= 2:
                 lastname_first = f"{parts[-1]} {' '.join(parts[:-1])}".lower().strip()
                 signal_map[lastname_first] = signal
+                if lastname_first in name_to_id:
+                    player_id = name_to_id[lastname_first]
+                    signal_id_map[player_id] = signal
         
         modified_count = 0
         for player in players:
-            player_key = player.name.lower().strip()
+            # Try ID match first (most reliable)
+            signal = signal_id_map.get(str(player.player_id))
             
-            # Try exact match
-            signal = signal_map.get(player_key)
+            if not signal:
+                # Fall back to name matching
+                player_key = player.name.lower().strip()
+                signal = signal_map.get(player_key)
             
             # Try partial matching if no exact match
             if not signal:
