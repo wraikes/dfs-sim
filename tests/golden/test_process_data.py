@@ -9,11 +9,11 @@ from pathlib import Path
 
 def test_process_data_mma():
     """Test MMA process_data.py processes raw data and generates CSV."""
-    test_path = Path("data/mma/dk/99")
+    test_path = Path("data/mma/99/dk")
     
     # Verify test data exists (from setup_data test)
-    raw_file = test_path / "raw/dk_99.json"
-    newsletter_file = test_path / "raw/newsletter_signals.json"
+    raw_file = test_path / "json/raw.json"
+    newsletter_file = test_path / "newsletters/linestar.txt"
     
     assert raw_file.exists(), f"Test data not found: {raw_file} - run test_setup_data.py first"
     assert newsletter_file.exists(), f"Newsletter data not found: {newsletter_file}"
@@ -30,7 +30,7 @@ def test_process_data_mma():
     assert result.returncode == 0, f"process_data.py failed: {result.stderr}"
     
     # Verify CSV was created
-    csv_file = test_path / "csv/dk_99_extracted.csv"
+    csv_file = test_path / "csv/extracted.csv"
     assert csv_file.exists(), f"Processed CSV not created: {csv_file}"
     
     # Load and validate CSV
@@ -41,16 +41,24 @@ def test_process_data_mma():
     
     # Required columns
     required_cols = [
-        'player_id', 'name', 'salary', 'updated_projection', 
-        'updated_ownership', 'updated_ceiling', 'updated_floor'
+        'player_id', 'name', 'salary', 'projection', 'floor', 'ceiling', 'ownership',
+        'updated_projection', 'updated_ownership', 'updated_ceiling', 'updated_floor'
     ]
     for col in required_cols:
         assert col in df.columns, f"Missing required column: {col}"
     
     # Newsletter signal columns
-    newsletter_cols = ['newsletter_signal', 'newsletter_confidence']
+    newsletter_cols = ['newsletter_signal', 'newsletter_confidence', 'newsletter_reason']
     for col in newsletter_cols:
         assert col in df.columns, f"Missing newsletter column: {col}"
+    
+    # Derived metrics columns (our calculated features)
+    derived_cols = [
+        'finishing_rate', 'style_score', 'matchup_advantage', 'takedown_matchup',
+        'strikes_per_fight', 'strike_accuracy', 'takedowns_per_fight', 'itd_probability'
+    ]
+    for col in derived_cols:
+        assert col in df.columns, f"Missing derived metric column: {col}"
     
     # Data type validation
     assert df['salary'].dtype in ['int64', 'float64'], "Salary should be numeric"

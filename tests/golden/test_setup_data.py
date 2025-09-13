@@ -10,7 +10,7 @@ from pathlib import Path
 def test_setup_data_mma():
     """Test MMA setup_data.py creates directories and provides URLs."""
     # Clean up any existing test data
-    test_path = Path("data/mma/dk/99")
+    test_path = Path("data/mma/99/dk")
     if test_path.exists():
         shutil.rmtree(test_path)
     
@@ -25,11 +25,13 @@ def test_setup_data_mma():
     # Check command succeeded
     assert result.returncode == 0, f"setup_data.py failed: {result.stderr}"
     
-    # Verify json directory was created
+    # Verify directories were created
     assert (test_path / "json").exists(), "json directory not created"
+    assert (test_path / "csv").exists(), "csv directory not created"
+    assert (test_path / "newsletters").exists(), "newsletters directory not created"
     
     # Verify empty file was created
-    assert (test_path / "json" / "99.json").exists(), "empty 99.json not created"
+    assert (test_path / "json" / "raw.json").exists(), "empty raw.json not created"
     
     # Check that output contains URL information
     output = result.stdout
@@ -37,18 +39,26 @@ def test_setup_data_mma():
     assert "https://www.linestarapp.com" in output, "LineStar URL not found"
     assert "99" in output, "PID not substituted in URLs"
     
-    # Copy 466 json files to 99 for subsequent tests
-    source_path = Path("data/mma/dk/466")
+    # Copy 466 data files to 99 for subsequent tests
+    source_path = Path("data/mma/466/dk")
     
     # Copy main data file
-    if (source_path / "json/466.json").exists():
+    if (source_path / "json/raw.json").exists():
         shutil.copy(
-            source_path / "json/466.json",
-            test_path / "json/99.json"
+            source_path / "json/raw.json",
+            test_path / "json/raw.json"
         )
     
-    # Verify test file was copied
-    assert (test_path / "json/99.json").exists(), "Test data file not copied"
+    # Copy newsletter file
+    if (source_path / "newsletters/linestar.txt").exists():
+        shutil.copy(
+            source_path / "newsletters/linestar.txt",
+            test_path / "newsletters/linestar.txt"
+        )
+    
+    # Verify test files were copied
+    assert (test_path / "json/raw.json").exists(), "Test data file not copied"
+    assert (test_path / "newsletters/linestar.txt").exists(), "Newsletter file not copied"
     
     print(f"✅ Setup test passed - directories created and test data copied to {test_path}")
 

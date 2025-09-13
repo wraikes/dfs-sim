@@ -24,8 +24,8 @@ class PlayerSignal:
     name: str
     signal: str  # 'target', 'avoid', 'neutral'
     confidence: float  # 0.0 to 1.0
-    ownership_delta: float  # -0.10 to +0.10
-    ceiling_delta: float  # -0.12 to +0.12
+    ownership_delta: float  # -0.15 to +0.15
+    ceiling_delta: float  # -0.15 to +0.15
     reason: str  # Explanation from newsletter
     
 
@@ -149,8 +149,8 @@ EXTRACTION RULES:
    - Mild mention/balanced view ("could work", "maybe"): 0.3-0.4
 
 3. Base delta directions by signal type:
-   - POSITIVE (target): ceiling_delta = +0.06 * confidence, ownership_delta = -0.08 * confidence  
-   - NEGATIVE (avoid): ceiling_delta = -0.06 * confidence, ownership_delta = +0.08 * confidence
+   - POSITIVE (target): ceiling_delta = +0.12 * confidence, ownership_delta = -0.15 * confidence  
+   - NEGATIVE (avoid): ceiling_delta = -0.12 * confidence, ownership_delta = +0.15 * confidence
 
 4. Sport context for {self.sport.upper()}:
    - Positions: {context.get('position_types', ['Player'])}
@@ -174,18 +174,18 @@ Focus on extracting actionable DFS signals, not general game analysis.'''
             
             # Calculate deltas based on confidence and signal type
             if signal_type == 'target':
-                ceiling_delta = 0.06 * confidence  # Max +0.054 at 0.9 confidence
-                ownership_delta = -0.08 * confidence  # Max -0.072 at 0.9 confidence  
+                ceiling_delta = 0.07 * confidence  # Max +0.063 at 0.9 confidence
+                ownership_delta = -0.10 * confidence  # Max -0.09 at 0.9 confidence  
             elif signal_type == 'avoid':
-                ceiling_delta = -0.06 * confidence  # Max -0.054 at 0.9 confidence
-                ownership_delta = 0.08 * confidence  # Max +0.072 at 0.9 confidence
+                ceiling_delta = -0.07 * confidence  # Max -0.063 at 0.9 confidence
+                ownership_delta = 0.10 * confidence  # Max +0.09 at 0.9 confidence
             else:
                 ceiling_delta = 0.0
                 ownership_delta = 0.0
             
             # Clamp to safe ranges
-            ownership_delta = max(-0.10, min(0.10, ownership_delta))
-            ceiling_delta = max(-0.12, min(0.12, ceiling_delta))
+            ownership_delta = max(-0.15, min(0.15, ownership_delta))
+            ceiling_delta = max(-0.15, min(0.15, ceiling_delta))
             
             signal = PlayerSignal(
                 name=p.get('name', '').strip(),

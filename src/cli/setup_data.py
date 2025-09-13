@@ -32,7 +32,7 @@ class DataSetupManager:
         self.sport = sport.lower()
         self.pid = pid
         self.site = site.lower()
-        self.base_path = Path(f"data/{self.sport}/{self.site}/{self.pid}")
+        self.base_path = Path(f"data/{self.sport}/{self.pid}/{self.site}")
         
         # Sport-specific configurations
         self.sport_configs = {
@@ -47,7 +47,7 @@ class DataSetupManager:
                     {
                         'name': 'LineStar Contest Data',
                         'url_template': 'https://www.linestarapp.com/DesktopModules/DailyFantasyApi/API/Fantasy/GetSalariesV4?sport={sport_id}&site={site_id}&periodId={pid}',
-                        'file': '{pid}.json',
+                        'file': 'raw.json',
                         'description': 'Complete contest data including salaries, projections, and ownership'
                     }
                 ],
@@ -91,16 +91,24 @@ class DataSetupManager:
         """Create empty directories and files for manual data input."""
         # Create directories
         json_dir = self.base_path / 'json'
+        csv_dir = self.base_path / 'csv'
+        newsletters_dir = self.base_path / 'newsletters'
+        
         json_dir.mkdir(parents=True, exist_ok=True)
+        csv_dir.mkdir(parents=True, exist_ok=True)
+        newsletters_dir.mkdir(parents=True, exist_ok=True)
+        
         print(f"📁 Created: {json_dir}")
+        print(f"📁 Created: {csv_dir}")
+        print(f"📁 Created: {newsletters_dir}")
         
         # Create empty files for user to fill
-        contest_file = json_dir / f"{self.pid}.json"
+        raw_file = json_dir / "raw.json"
         
         # Create empty JSON file
-        if not contest_file.exists():
-            contest_file.write_text("{}")
-            print(f"📄 Created empty: {contest_file}")
+        if not raw_file.exists():
+            raw_file.write_text("{}")
+            print(f"📄 Created empty: {raw_file}")
     
     def display_data_sources(self):
         """Display data source URLs and instructions."""
