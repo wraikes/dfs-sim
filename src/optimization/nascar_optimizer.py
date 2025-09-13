@@ -381,12 +381,31 @@ class NASCAROptimizer(BaseOptimizer):
                     if mid_tier:
                         selected.extend(random.sample(mid_tier, min(num_mid, len(mid_tier))))
 
-                    # Fill rest with PD plays (need at least 3 from P18+) - prioritize upside + leverage
+                    # Fill rest with PD plays (need at least 3 from P18+) - prioritize VALUE-ADJUSTED leverage
                     remaining_slots = 6 - len(selected)
                     if pd_plays and remaining_slots > 0:
-                        # Sort by PD upside potential and ownership leverage
-                        # Higher PD upside is better, lower ownership is better
-                        pd_sorted = sorted(pd_plays, key=lambda x: (-x.metadata.get('pd_upside', 0), x.ownership))
+                        # Calculate value-adjusted scores for PD plays (same logic as in scoring)
+                        pd_with_values = []
+                        for player in pd_plays:
+                            # Calculate value metrics
+                            pts_per_dollar = (player.adjusted_projection / player.salary) * 1000
+                            ceiling_upside = player.ceiling / player.adjusted_projection if player.adjusted_projection > 0 else 1.0
+                            dominator_value = player.metadata.get('dominator_score', 0)
+
+                            # Combined value score (normalize to 0-1 range roughly)
+                            value_score = (
+                                min(pts_per_dollar / 5.0, 1.0) * 0.4 +  # Efficiency
+                                min(ceiling_upside / 2.0, 1.0) * 0.3 +   # Upside potential
+                                min(dominator_value / 15.0, 1.0) * 0.3   # Sport-specific value
+                            )
+
+                            # Only consider if good value (0.4+ score)
+                            if value_score >= 0.4:
+                                leverage_score = max(0, 50 - player.ownership) / 50 * value_score
+                                pd_with_values.append((player, leverage_score))
+
+                        # Sort by leverage score (value-adjusted ownership)
+                        pd_sorted = [player for player, _ in sorted(pd_with_values, key=lambda x: -x[1])]
 
                         # Strategy: Mix high-upside with some randomization for diversity
                         if remaining_slots >= 2 and len(pd_sorted) >= 2:
@@ -441,8 +460,29 @@ class NASCAROptimizer(BaseOptimizer):
         # Base score from 95th percentile (main GPP target)
         base_score = lineup.percentile_95
 
-        # Ownership leverage bonus (lower ownership = higher leverage)
-        ownership_leverage = max(0, self.constraints.max_lineup_ownership - lineup.total_ownership) / self.constraints.max_lineup_ownership * 25
+        # Use universal value-adjusted leverage calculation
+        def get_nascar_metrics(player):
+            """Get NASCAR-specific value metrics for a player."""
+            dominator_score = player.metadata.get('dominator_score', 0)
+            pd_upside = player.metadata.get('pd_upside', 0)
+            starting_pos = player.metadata.get('starting_position', 20)
+
+            # Normalize metrics to 0-1 scale
+            metrics = {}
+            metrics['dominator'] = min(dominator_score / 15.0, 1.0)
+            metrics['pd_potential'] = min(pd_upside / 10.0, 1.0)
+
+            # Position-based value (front runners vs back markers)
+            if starting_pos <= 12:
+                metrics['position_value'] = 0.8  # Front runners have high value
+            elif starting_pos >= 25:
+                metrics['position_value'] = 0.7  # Back markers have PD value
+            else:
+                metrics['position_value'] = 0.5  # Mid-pack moderate value
+
+            return metrics
+
+        ownership_leverage = self._calculate_lineup_value_leverage(lineup, get_nascar_metrics)
 
         # Position differential bonus based on sport rules
         pd_bonus = 0

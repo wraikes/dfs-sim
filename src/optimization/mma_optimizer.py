@@ -331,20 +331,33 @@ class MMAOptimizer(BaseOptimizer):
         return final_score
     
     def _calculate_leverage_score(self, lineup: BaseLineup) -> float:
-        """Calculate leverage score for MMA lineup."""
-        leverage = 0
-        for player in lineup.players:
-            if player.ownership < 15:
-                ceiling_upside = player.ceiling - player.projection
-                ownership_factor = (100 - player.ownership) / 100
-                
-                if player.ownership < 5:
-                    # Extreme leverage plays get bonus
-                    leverage += ceiling_upside * ownership_factor * 3
-                else:
-                    leverage += ceiling_upside * ownership_factor * 2
-        
-        return leverage
+        """Calculate leverage score using universal value-adjusted system."""
+        def get_mma_metrics(player):
+            """Get MMA-specific value metrics for a player."""
+            itd_prob = player.metadata.get('itd_probability', 0.35)
+            ml_odds = player.metadata.get('ml_odds', 0)
+            is_favorite = ml_odds < 0
+            fight_minutes = player.metadata.get('fight_minutes', 15)  # Expected fight time
+
+            # Normalize metrics to 0-1 scale
+            metrics = {}
+            metrics['itd_potential'] = min(itd_prob / 0.7, 1.0)  # Cap at 70% ITD
+
+            # Favorite/underdog value
+            if is_favorite:
+                # Favorites have lower variance but higher floor
+                metrics['favorite_value'] = min(abs(ml_odds) / 300, 1.0) * 0.7
+            else:
+                # Underdogs have higher ceiling potential
+                metrics['underdog_value'] = min(ml_odds / 500, 1.0) * 0.9
+
+            # Activity rate value (more activity = more points)
+            if fight_minutes > 0:
+                metrics['activity_value'] = min(player.adjusted_projection / fight_minutes / 10, 1.0)
+
+            return metrics
+
+        return self._calculate_lineup_value_leverage(lineup, get_mma_metrics)
     
     def _display_lineup_players(self, lineup: BaseLineup):
         """Display MMA lineup players."""

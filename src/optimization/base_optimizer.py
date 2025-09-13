@@ -117,6 +117,88 @@ class BaseOptimizer(ABC):
         """Create sport-specific lineup object."""
         pass
     
+    def _calculate_value_adjusted_leverage(self, player: Player,
+                                           sport_value_metrics: Dict[str, float] = None) -> float:
+        """
+        Universal value-first leverage calculation.
+
+        Args:
+            player: Player to evaluate
+            sport_value_metrics: Optional sport-specific value components (0-1 scale)
+                                e.g., {'itd_prob': 0.5, 'dominator': 0.8}
+
+        Returns:
+            Value-adjusted leverage score
+        """
+        # Base value metrics (universal)
+        pts_per_dollar = (player.adjusted_projection / player.salary) * 1000
+        ceiling_upside = player.ceiling / player.adjusted_projection if player.adjusted_projection > 0 else 1.0
+
+        # Sport-specific efficiency thresholds
+        efficiency_thresholds = {
+            'nfl': 3.0,    # NFL has lower pts/$
+            'nba': 5.0,    # NBA is middle
+            'mlb': 3.5,    # MLB similar to NFL
+            'nascar': 5.0, # NASCAR similar to NBA
+            'mma': 12.0,   # MMA has highest pts/$
+            'pga': 7.0     # PGA in between
+        }
+        efficiency_cap = efficiency_thresholds.get(self.sport, 5.0)
+
+        # Base value score components
+        efficiency_score = min(pts_per_dollar / efficiency_cap, 1.0)
+        upside_score = min(ceiling_upside / 2.0, 1.0)
+
+        # Combine base metrics with sport-specific metrics
+        if sport_value_metrics:
+            # Weight base metrics at 60%, sport-specific at 40%
+            base_weight = 0.6
+            sport_weight = 0.4
+
+            base_value = (efficiency_score * 0.5 + upside_score * 0.5) * base_weight
+            sport_value = sum(sport_value_metrics.values()) / len(sport_value_metrics) * sport_weight
+            value_score = base_value + sport_value
+        else:
+            # No sport-specific metrics, use base only
+            value_score = efficiency_score * 0.5 + upside_score * 0.5
+
+        # Only give leverage if player has good value (0.4+ score)
+        if value_score >= 0.4:
+            # Value-first approach: value is primary, ownership is tiebreaker
+            base_value_bonus = value_score * 12  # 0.4-1.0 → 4.8-12.0 bonus
+
+            # Small ownership tiebreaker (doesn't overwhelm value)
+            ownership_tiebreaker = max(0, 50 - player.ownership) / 50 * 3  # Max 3 points
+
+            return base_value_bonus + ownership_tiebreaker
+
+        return 0
+
+    def _calculate_lineup_value_leverage(self, lineup: BaseLineup,
+                                        get_sport_metrics_fn: callable = None) -> float:
+        """
+        Calculate total value-adjusted leverage for a lineup.
+
+        Args:
+            lineup: Lineup to evaluate
+            get_sport_metrics_fn: Optional function that returns sport-specific
+                                 value metrics for a player
+
+        Returns:
+            Total value-adjusted leverage score
+        """
+        total_leverage = 0
+
+        for player in lineup.players:
+            sport_metrics = None
+            if get_sport_metrics_fn:
+                sport_metrics = get_sport_metrics_fn(player)
+
+            player_leverage = self._calculate_value_adjusted_leverage(player, sport_metrics)
+            total_leverage += player_leverage
+
+        return total_leverage
+
     @abstractmethod
     def _score_lineup_gpp(self, lineup: BaseLineup) -> float:
         """Score lineup for GPP success."""
@@ -217,39 +299,70 @@ class BaseOptimizer(ABC):
         pass
     
     def optimize_lineups(self, num_lineups: int = 20) -> List[BaseLineup]:
-        """Main optimization pipeline."""
+        """Main optimization pipeline with deterministic robust selection."""
         print(f"\n🚀 Generating {num_lineups} {self.sport.upper()} GPP lineups...")
         print("=" * 60)
-        
+
         # Generate field if not done
         if not self.field:
             self.generate_field()
-        
-        # Generate candidates
-        candidates = self.generate_lineup_candidates(num_lineups * 5)
+
+        # Generate large pool of candidates for robust selection
+        target_candidates = 200  # Manageable pool size
+        candidates = self.generate_lineup_candidates(target_candidates)
         print(f"📊 Generated {len(candidates)} candidates for scoring...")
-        
-        # Score all candidates
+
+        # Score all candidates with GPP scoring
         for lineup in candidates:
             lineup.gpp_score = self._score_lineup_gpp(lineup)
-        
-        # Sort by GPP score
-        candidates.sort(key=lambda x: x.gpp_score, reverse=True)
-        
-        # Select diverse lineups
-        final_lineups = []
-        for lineup in candidates:
-            if len(final_lineups) >= num_lineups:
-                break
-            
-            # Check diversity constraint
-            if all(lineup.calculate_overlap_with_lineup(existing) <= self.constraints.max_lineup_overlap 
-                   for existing in final_lineups):
-                final_lineups.append(lineup)
-                self.generated_lineups.append(lineup)
-        
+
+        # Apply simple deterministic selection
+        candidates = self._apply_deterministic_selection(candidates, num_lineups)
+
+        # Take top N lineups (already sorted deterministically)
+        final_lineups = candidates[:num_lineups]
+
+        for lineup in final_lineups:
+            self.generated_lineups.append(lineup)
+
         print(f"✅ Selected {len(final_lineups)} optimized lineups")
         return final_lineups
+
+    def _apply_deterministic_selection(self, candidates: List[BaseLineup],
+                                       target_lineups: int) -> List[BaseLineup]:
+        """Apply simple deterministic selection from equivalent lineups."""
+        if not candidates:
+            return candidates
+
+        # Find uncertainty threshold (5% of best score)
+        max_score = max(lineup.gpp_score for lineup in candidates)
+        threshold = max_score * 0.95
+
+        # Get lineups within uncertainty threshold (statistically equivalent)
+        equivalent_lineups = [lineup for lineup in candidates if lineup.gpp_score >= threshold]
+
+        print(f"🎯 Deterministic selection: {len(equivalent_lineups)} candidates within 5% of best score ({max_score:.1f})")
+
+        # Multi-level deterministic ranking using raw player data
+        equivalent_lineups.sort(key=lambda x: (
+            x.total_ownership,                              # 1st: Lowest total ownership (most contrarian)
+            -(x.total_projection / x.total_salary * 1000),  # 2nd: Highest salary efficiency
+            x.total_salary,                                 # 3rd: Lowest total salary (more savings)
+            -x.total_projection,                            # 4th: Highest total projection (negative for desc)
+            tuple(sorted(p.ownership for p in x.players)), # 5th: Player ownership pattern
+            tuple(sorted(p.salary for p in x.players)),    # 6th: Player salary pattern
+            tuple(sorted(p.adjusted_projection for p in x.players)), # 7th: Player projection pattern
+            tuple(sorted(p.player_id for p in x.players))  # 8th: Final deterministic ID-based tiebreaker
+        ))
+
+        # If we need more lineups than equivalent ones, add the rest sorted by GPP score
+        remaining_candidates = [lineup for lineup in candidates if lineup.gpp_score < threshold]
+        remaining_candidates.sort(key=lambda x: x.gpp_score, reverse=True)
+
+        # Combine: equivalent lineups first (sorted deterministically), then remaining by score
+        all_candidates = equivalent_lineups + remaining_candidates
+
+        return all_candidates
     
     def display_lineup_stats(self, lineups: List[BaseLineup]):
         """Display lineup statistics - can be overridden by sport."""
