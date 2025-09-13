@@ -72,19 +72,17 @@ class DataSetupManager:
             },
             'nfl': {
                 'name': 'NFL',
-                'raw_files': ['salaries.csv', 'ownership.csv', 'projections.csv'],
+                'linestar_sport_id': 1,  # NFL sport ID on LineStar
+                'site_ids': {
+                    'dk': 1,
+                    'fd': 2
+                },
                 'data_sources': [
                     {
-                        'name': 'DraftKings Salaries',
-                        'url_template': 'https://www.draftkings.com/lineup/getavailableplayerscsv?contestTypeId=1&draftGroupId={pid}',
-                        'file': 'salaries.csv',
-                        'description': 'Player salaries and positions'
-                    },
-                    {
-                        'name': 'RotoGrinders Ownership', 
-                        'url_template': 'https://rotogrinders.com/projected-ownership/NFL-{pid}',
-                        'file': 'ownership.csv',
-                        'description': 'Projected ownership percentages'
+                        'name': 'LineStar NFL Contest Data',
+                        'url_template': 'https://www.linestarapp.com/DesktopModules/DailyFantasyApi/API/Fantasy/GetSalariesV4?sport={sport_id}&site={site_id}&periodId={pid}',
+                        'file': 'raw.json',
+                        'description': 'NFL player salaries, projections, ownership, and game data'
                     }
                 ],
                 'newsletter_file': 'newsletter_signals.json'
