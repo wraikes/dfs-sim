@@ -266,7 +266,7 @@ class BaseDataProcessor(ABC):
         # Calculate final metrics
         print("\n5️⃣ Calculating final metrics...")
         df['value'] = df['updated_projection'] / df['salary'] * 1000
-        
+
         return df
     
     def save_processed_data(self, df: pd.DataFrame) -> Path:
@@ -1413,6 +1413,76 @@ class NFLDataProcessor(BaseDataProcessor):
         # Apply ceiling adjustments
         df['synthesized_floor'] = df['floor']
         df['adjusted_ceiling'] = df['ceiling'] * df['ceiling_adjustment']
+
+        # Engineer NFL-specific advanced features
+        df = self._engineer_nfl_features(df)
+
+        return df
+
+    def _engineer_nfl_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Engineer NFL-specific advanced features from existing data."""
+        print("   🔧 Engineering NFL value efficiency metrics...")
+
+        # Value Efficiency Metrics
+        df['ceiling_per_dollar'] = (df['adjusted_ceiling'] / df['salary']) * 1000  # Ceiling points per $1K
+        df['projection_per_ownership'] = df['projection'] / df['ownership']  # Leverage ratio
+        df['salary_vs_projection_ratio'] = df['salary'] / (df['projection'] * 1000)  # Pricing efficiency
+
+        print("   📊 Engineering NFL risk-adjusted metrics...")
+
+        # Risk-Adjusted Metrics (avoid division by zero)
+        df['sharpe_ratio'] = np.where(df['adjusted_std_dev'] > 0,
+                                      (df['projection'] - df['floor']) / df['adjusted_std_dev'], 0)
+        df['ceiling_volatility'] = np.where(df['projection'] > 0,
+                                            (df['adjusted_ceiling'] - df['projection']) / df['projection'], 0)
+        df['confidence_weighted_proj'] = df['projection'] * (df['confidence'] / 100.0)
+
+        print("   🎯 Engineering NFL position-specific features...")
+
+        # Position-Specific Features
+        # RB: Goal line value (RZ targets × snap share)
+        df['goal_line_value'] = np.where(df['position'] == 'RB',
+                                         df['rz_targets'] * (df['snap_pct'] / 100.0), 0)
+
+        # WR/TE: Target efficiency (targets per snap)
+        df['target_efficiency'] = np.where(df['position'].isin(['WR', 'TE']) & (df['snap_pct'] > 0),
+                                           df['targets_per_game'] / (df['snap_pct'] / 100.0), 0)
+
+        # QB: Passing volume indicator
+        df['qb_volume_indicator'] = np.where(df['position'] == 'QB',
+                                             df['targets_per_game'] * df['snap_pct'] / 100.0, 0)
+
+        print("   🏈 Engineering NFL game context features...")
+
+        # Game Context Features
+        df['is_home'] = (df['team'] == df['home_team']).astype(int)
+
+        # Calculate game totals for pace proxy
+        game_totals = df.groupby('game_id')['projection'].sum().to_dict()
+        df['game_pace_proxy'] = df['game_id'].map(game_totals)
+
+        # Team stack potential (sum of ceiling for same team)
+        team_ceilings = df.groupby('team')['adjusted_ceiling'].sum().to_dict()
+        df['team_stack_ceiling'] = df['team'].map(team_ceilings)
+
+        print("   🎪 Engineering NFL matchup leverage...")
+
+        # Matchup & Leverage Features
+        df['defensive_mismatch'] = df['matchup_fppg_allowed'] - (df['opponent_rank'] * 0.5)
+        df['ownership_mispricing'] = df['ownership'] - (df['projection'] * 2)
+
+        # Newsletter signal strength (if available)
+        if 'newsletter_signal' in df.columns and 'newsletter_confidence' in df.columns:
+            signal_multipliers = {'target': 1.5, 'fade': -1.0, 'volatile': 1.2, 'neutral': 0.0}
+            df['signal_strength'] = df['newsletter_signal'].map(signal_multipliers).fillna(0) * df['newsletter_confidence']
+
+        # Contrarian boost (if ownership_delta exists)
+        if 'ownership_delta' in df.columns:
+            df['contrarian_boost'] = df['ownership_delta'] * -1
+        else:
+            df['contrarian_boost'] = 0.0
+
+        print(f"   ✅ Engineered 14 NFL-specific advanced features")
 
         return df
 

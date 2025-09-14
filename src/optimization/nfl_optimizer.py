@@ -439,6 +439,16 @@ class NFLOptimizer(BaseOptimizer):
         if not isinstance(lineup, NFLLineup):
             return 0.0
 
+        # Run simulation if needed
+        if lineup.simulated_scores is None:
+            scores = self.simulator._simulate_correlated(lineup.players)
+            lineup.simulated_scores = scores
+            lineup.percentile_25 = np.percentile(scores, 25)
+            lineup.percentile_50 = np.percentile(scores, 50)
+            lineup.percentile_75 = np.percentile(scores, 75)
+            lineup.percentile_95 = np.percentile(scores, 95)
+            lineup.percentile_99 = np.percentile(scores, 99)
+
         # Base scoring: 70% simulation results + 30% other factors
         sim_score = lineup.percentile_95 * 0.7
 
@@ -460,10 +470,56 @@ class NFLOptimizer(BaseOptimizer):
         # Ceiling potential (95th percentile focus)
         ceiling_bonus = (lineup.percentile_95 - lineup.percentile_50) * 0.3
 
+        # NEW: Engineered features bonus
+        engineered_bonus = self._calculate_engineered_features_bonus(lineup)
+
         # Combine all scoring components
-        total_score = sim_score + stack_bonus + target_bonus + (leverage_bonus * 0.3) + ceiling_bonus
+        total_score = sim_score + stack_bonus + target_bonus + (leverage_bonus * 0.3) + ceiling_bonus + engineered_bonus
 
         return max(total_score, 0)
+
+    def _calculate_engineered_features_bonus(self, lineup: BaseLineup) -> float:
+        """Calculate bonus from engineered features."""
+        total_bonus = 0.0
+
+        for player in lineup.players:
+            # Value efficiency bonus (ceiling per dollar)
+            if hasattr(player, 'ceiling_per_dollar'):
+                ceiling_efficiency = getattr(player, 'ceiling_per_dollar', 0)
+                if ceiling_efficiency > 4.0:  # Above average ceiling per $1K
+                    total_bonus += (ceiling_efficiency - 4.0) * 2  # Bonus for efficient ceiling
+
+            # Leverage bonus (projection per ownership ratio)
+            if hasattr(player, 'projection_per_ownership'):
+                leverage = getattr(player, 'projection_per_ownership', 0)
+                if leverage > 1.5:  # High leverage play
+                    total_bonus += (leverage - 1.5) * 3  # Bonus for leverage
+
+            # Risk-adjusted bonus (Sharpe ratio)
+            if hasattr(player, 'sharpe_ratio'):
+                sharpe = getattr(player, 'sharpe_ratio', 0)
+                if sharpe > 0.6:  # Good risk-adjusted return
+                    total_bonus += (sharpe - 0.6) * 5  # Bonus for risk-adjusted upside
+
+            # Position-specific bonuses
+            if player.position == Position.RB and hasattr(player, 'goal_line_value'):
+                gl_value = getattr(player, 'goal_line_value', 0)
+                if gl_value > 0.2:  # Meaningful goal line usage
+                    total_bonus += gl_value * 10  # TD opportunity bonus
+
+            if player.position in [Position.WR, Position.TE] and hasattr(player, 'target_efficiency'):
+                target_eff = getattr(player, 'target_efficiency', 0)
+                if target_eff > 1.5:  # High target per snap ratio
+                    total_bonus += (target_eff - 1.5) * 2  # Volume efficiency bonus
+
+            # Matchup leverage bonus
+            if hasattr(player, 'defensive_mismatch'):
+                mismatch = getattr(player, 'defensive_mismatch', 0)
+                if mismatch > 5:  # Favorable matchup
+                    total_bonus += (mismatch - 5) * 0.5  # Matchup bonus
+
+        # Cap the total engineered bonus to prevent over-optimization
+        return min(total_bonus, 15.0)  # Max 15 point bonus from engineered features
 
     def _display_lineup_players(self, lineup: BaseLineup):
         """Display NFL lineup with position assignments and stacking info."""
@@ -532,8 +588,24 @@ class NFLOptimizer(BaseOptimizer):
             'rz_targets': float(row.get('rz_targets', 0.0)),
             'matchup_fppg_allowed': float(row.get('matchup_fppg_allowed', 15.0)),
             'speed_advantage': float(row.get('speed_advantage', 0.0)),
-            'shadow_coverage': bool(row.get('shadow_coverage', False))
+            'shadow_coverage': bool(row.get('shadow_coverage', False)),
+            # Engineered features
+            'ceiling_per_dollar': float(row.get('ceiling_per_dollar', 0.0)),
+            'projection_per_ownership': float(row.get('projection_per_ownership', 0.0)),
+            'sharpe_ratio': float(row.get('sharpe_ratio', 0.0)),
+            'goal_line_value': float(row.get('goal_line_value', 0.0)),
+            'target_efficiency': float(row.get('target_efficiency', 0.0)),
+            'defensive_mismatch': float(row.get('defensive_mismatch', 0.0)),
+            'ownership_mispricing': float(row.get('ownership_mispricing', 0.0))
         }
+
+        # Add engineered features as direct attributes for easy access
+        player.ceiling_per_dollar = float(row.get('ceiling_per_dollar', 0.0))
+        player.projection_per_ownership = float(row.get('projection_per_ownership', 0.0))
+        player.sharpe_ratio = float(row.get('sharpe_ratio', 0.0))
+        player.goal_line_value = float(row.get('goal_line_value', 0.0))
+        player.target_efficiency = float(row.get('target_efficiency', 0.0))
+        player.defensive_mismatch = float(row.get('defensive_mismatch', 0.0))
 
         return player
 
