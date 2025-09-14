@@ -13,6 +13,7 @@ class Position(Enum):
     RB = "RB"
     WR = "WR"
     TE = "TE"
+    K = "K"  # Kicker
     DST = "DST"
     FLEX = "FLEX"  # RB/WR/TE
     SUPER_FLEX = "SUPER_FLEX"  # Any position including QB

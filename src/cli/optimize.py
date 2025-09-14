@@ -36,7 +36,7 @@ def create_optimizer(sport: str, players: List = None) -> BaseOptimizer:
     optimizers = {
         'mma': lambda: _import_mma_optimizer()(players or [], sport),
         'nascar': lambda: _import_nascar_optimizer()(players or [], sport),
-        # 'nfl': lambda: _import_nfl_optimizer()(players or [], sport),  # Future implementation
+        'nfl': lambda: _import_nfl_optimizer()(players or [], sport),
         # 'nba': lambda: _import_nba_optimizer()(players or [], sport),  # Future implementation
     }
 
@@ -57,6 +57,12 @@ def _import_nascar_optimizer():
     """Import NASCAR optimizer to avoid circular imports."""
     from src.optimization.nascar_optimizer import NASCAROptimizer
     return NASCAROptimizer
+
+
+def _import_nfl_optimizer():
+    """Import NFL optimizer to avoid circular imports."""
+    from src.optimization.nfl_optimizer import NFLOptimizer
+    return NFLOptimizer
 
 
 def load_processed_data(sport: str, pid: str, site: SiteCode = SiteCode.DK) -> pd.DataFrame:
@@ -119,13 +125,66 @@ def export_lineups(lineups: List, sport: str, pid: str, site: SiteCode, output_f
     """Export lineups to file."""
     output_dir = Path(f"data/{sport}/{pid}/{site.value}/lineups")
     output_dir.mkdir(exist_ok=True)
-    
+
     if output_format.lower() == 'csv':
-        return _export_lineups_csv(lineups, output_dir, pid, contest_type)
+        # Use sport-specific CSV export if available
+        if sport.lower() == 'nfl':
+            return _export_nfl_lineups_csv(lineups, output_dir, pid, contest_type)
+        else:
+            return _export_lineups_csv(lineups, output_dir, pid, contest_type)
     elif output_format.lower() == 'dk':
         return _export_lineups_dk(lineups, output_dir, pid, contest_type)
     else:
         raise ValueError(f"Unsupported export format: {output_format}")
+
+
+def _export_nfl_lineups_csv(lineups: List, output_dir: Path, pid: str, contest_type: str = 'gpp') -> Path:
+    """Export NFL lineups to detailed CSV format with NFL position data."""
+    output_file = output_dir / f"lineups_{pid}_{contest_type}.csv"
+
+    # Sort lineups by GPP score (highest first)
+    if lineups and hasattr(lineups[0], 'gpp_score'):
+        lineups = sorted(lineups, key=lambda x: x.gpp_score, reverse=True)
+
+    lineup_data = []
+    for i, lineup in enumerate(lineups, 1):
+        for j, player in enumerate(lineup.players, 1):
+            row = {
+                'lineup_id': i,
+                'position': j,
+                'nfl_position': player.position.value,  # NFL position (QB, RB, WR, TE, DST)
+                'player_name': player.name,
+                'oteam': player.team,
+                'salary': player.salary,
+                'projection': getattr(player, 'adjusted_projection', player.projection),
+                'ownership': getattr(player, 'adjusted_ownership', player.ownership),
+                'player_id': player.player_id,
+            }
+
+            # Add lineup-level metrics to each row
+            if hasattr(lineup, 'gpp_score'):
+                row['gpp_score'] = lineup.gpp_score
+            if hasattr(lineup, 'percentile_25'):
+                row['percentile_25'] = lineup.percentile_25
+            if hasattr(lineup, 'percentile_50'):
+                row['percentile_50'] = lineup.percentile_50
+            if hasattr(lineup, 'percentile_75'):
+                row['percentile_75'] = lineup.percentile_75
+            if hasattr(lineup, 'percentile_95'):
+                row['percentile_95'] = lineup.percentile_95
+            if hasattr(lineup, 'percentile_99'):
+                row['percentile_99'] = lineup.percentile_99
+            if hasattr(lineup, 'leverage_score'):
+                row['leverage_score'] = lineup.leverage_score
+            if hasattr(lineup, 'uniqueness_score'):
+                row['uniqueness_score'] = lineup.uniqueness_score
+
+            lineup_data.append(row)
+
+    df = pd.DataFrame(lineup_data)
+    df.to_csv(output_file, index=False)
+    print(f"💾 Exported detailed NFL lineups: {output_file}")
+    return output_file
 
 
 def _export_lineups_csv(lineups: List, output_dir: Path, pid: str, contest_type: str = 'gpp') -> Path:

@@ -409,6 +409,122 @@ class MMACorrelationBuilder(BaseCorrelationBuilder):
         return rules
 
 
+class NFLCorrelationBuilder(BaseCorrelationBuilder):
+    """NFL correlation builder with stacking and game correlations.
+
+    Rules:
+    1. QB-pass catcher stacks: Same team QB + WR/TE/RB correlate (+0.6 to +0.8)
+    2. Game stacks: Players in same game correlate (+0.15 to +0.25)
+    3. Negative correlations: Opposing DSTs vs offensive players (-0.3)
+    4. RB-DST same team: Positive correlation (+0.4)
+    5. Weather correlations: Bad weather boosts RB/DST, hurts passing
+    """
+
+    def build_matrix(self) -> np.ndarray:
+        """Build NFL correlation matrix with stacking emphasis."""
+        n = len(self.players)
+        if n == 0:
+            return np.eye(0)
+
+        # Start with identity matrix
+        matrix = np.eye(n, dtype=np.float32)
+
+        for i in range(n):
+            for j in range(i+1, n):
+                player1 = self.players[i]
+                player2 = self.players[j]
+
+                # Get correlation coefficient
+                corr = self._get_correlation(player1, player2)
+                if corr != 0:
+                    matrix[i, j] = corr
+                    matrix[j, i] = corr  # Symmetric
+
+        return matrix
+
+    def _get_correlation(self, p1: Player, p2: Player) -> float:
+        """Calculate correlation between two NFL players."""
+        # Same team stacking correlations
+        if p1.team == p2.team and p1.team:
+            # QB + pass catchers (primary stacks)
+            if p1.position.value == 'QB' and p2.position.value in ['WR', 'TE']:
+                return 0.75  # Strong QB-WR correlation
+            if p2.position.value == 'QB' and p1.position.value in ['WR', 'TE']:
+                return 0.75
+
+            # QB + RB (weaker but positive)
+            if (p1.position.value == 'QB' and p2.position.value == 'RB') or \
+               (p2.position.value == 'QB' and p1.position.value == 'RB'):
+                return 0.25  # Weaker QB-RB correlation
+
+            # RB + DST same team (positive game script)
+            if (p1.position.value == 'RB' and p2.position.value == 'DST') or \
+               (p2.position.value == 'RB' and p1.position.value == 'DST'):
+                return 0.45  # Strong RB-DST correlation
+
+            # WR + WR same team (bring-back stacks)
+            if p1.position.value == 'WR' and p2.position.value == 'WR':
+                return 0.20  # Moderate WR-WR correlation
+
+            # TE + WR same team
+            if (p1.position.value == 'TE' and p2.position.value == 'WR') or \
+               (p2.position.value == 'TE' and p1.position.value == 'WR'):
+                return 0.15  # Light TE-WR correlation
+
+        # Same game correlations (different teams)
+        game1 = p1.metadata.get('game_id', '')
+        game2 = p2.metadata.get('game_id', '')
+        if game1 and game2 and game1 == game2 and p1.team != p2.team:
+            # Bring-back stacks (different teams, same game)
+            if p1.position.value in ['QB', 'WR', 'TE', 'RB'] and \
+               p2.position.value in ['QB', 'WR', 'TE', 'RB']:
+                return 0.20  # Game stack correlation
+
+        # Negative correlations
+        if p1.team != p2.team and p1.team and p2.team:
+            # DST vs opposing offense
+            if p1.position.value == 'DST' and p2.position.value in ['QB', 'WR', 'TE', 'RB']:
+                if p1.opponent == p2.team:
+                    return -0.30  # DST vs opposing offense
+            if p2.position.value == 'DST' and p1.position.value in ['QB', 'WR', 'TE', 'RB']:
+                if p2.opponent == p1.team:
+                    return -0.30
+
+        return 0.0  # No correlation
+
+    def get_rules(self) -> List[CorrelationRule]:
+        """Generate NFL correlation rules."""
+        rules = []
+
+        for i, player1 in enumerate(self.players):
+            for j, player2 in enumerate(self.players[i+1:], start=i+1):
+                corr = self._get_correlation(player1, player2)
+                if corr != 0:
+                    rule_type = self._get_rule_type(player1, player2, corr)
+                    rules.append(CorrelationRule(
+                        player1_id=i,
+                        player2_id=j,
+                        correlation=corr,
+                        rule_type=rule_type
+                    ))
+
+        return rules
+
+    def _get_rule_type(self, p1: Player, p2: Player, corr: float) -> str:
+        """Determine the type of correlation rule."""
+        if p1.team == p2.team:
+            if p1.position.value == 'QB' or p2.position.value == 'QB':
+                return 'qb_stack'
+            elif p1.position.value == 'DST' or p2.position.value == 'DST':
+                return 'defense_stack'
+            else:
+                return 'same_team'
+        elif corr > 0:
+            return 'game_stack'
+        else:
+            return 'negative_correlation'
+
+
 def build_correlation_matrix(sport: str, players: List[Player]) -> Tuple[np.ndarray, List[CorrelationRule]]:
     """Build correlation matrix for any sport."""
     if sport.lower() == 'mma':
@@ -418,6 +534,11 @@ def build_correlation_matrix(sport: str, players: List[Player]) -> Tuple[np.ndar
         return matrix, rules
     elif sport.lower() == 'nascar':
         builder = NASCARCorrelationBuilder(players)
+        matrix = builder.build_matrix()
+        rules = builder.get_rules()
+        return matrix, rules
+    elif sport.lower() == 'nfl':
+        builder = NFLCorrelationBuilder(players)
         matrix = builder.build_matrix()
         rules = builder.get_rules()
         return matrix, rules

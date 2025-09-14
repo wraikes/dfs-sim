@@ -224,8 +224,12 @@ class BaseOptimizer(ABC):
         for _, row in df.iterrows():
             player = self._create_player_from_row(row)
             players.append(player)
-        
+
         self.players = players
+
+        # Recreate field generator with loaded players
+        self.field_generator = self._create_field_generator()
+
         return players
     
     @abstractmethod 
@@ -340,9 +344,18 @@ class BaseOptimizer(ABC):
         import random
         from collections import Counter
 
-        print(f"\n🎯 Generating consensus {self.sport.upper()} lineup using multi-seed approach...")
+        # NFL-specific: Use highest salary selection
+        if self.sport.lower() == 'nfl':
+            return self._optimize_nfl_consensus()
+        else:
+            return self._optimize_duplicate_consensus()
+
+    def _optimize_nfl_consensus(self) -> List[BaseLineup]:
+        """NFL-specific consensus: Generate 25 lineups and select highest salary."""
+        import random
+        print(f"\n🎯 Generating consensus NFL lineup using highest-salary selection...")
         print("=" * 80)
-        print("Running 25 seeds × 25,000 simulations = 625,000 total simulations")
+        print("Generating 25 lineups and selecting the one with highest salary usage")
         print("=" * 80)
 
         # Store original simulation count and field
@@ -351,11 +364,72 @@ class BaseOptimizer(ABC):
 
         # Set parameters for consensus runs
         self.simulator.n_simulations = 25000
-        consensus_seeds = list(range(1, 26))  # Seeds 1-25
         all_lineups = []
 
-        for i, seed in enumerate(consensus_seeds, 1):
-            print(f"🎲 Seed {seed:2d}/25 ({i*4:3d}% complete)...")
+        for seed in range(1, 26):
+            print(f"🎲 Seed {seed:2d}/25 ({seed*4:3d}% complete)...")
+
+            # Set seed for reproducibility
+            random.seed(seed)
+            np.random.seed(seed)
+
+            # Reset field for this seed
+            self.field = []
+
+            # Run single optimization
+            candidates = self.generate_lineup_candidates(200)
+
+            # Score candidates
+            for lineup in candidates:
+                lineup.gpp_score = self._score_lineup_gpp(lineup)
+
+            # Get best lineup using deterministic selection
+            best_candidates = self._apply_deterministic_selection(candidates, 1)
+            if best_candidates:
+                best_lineup = best_candidates[0]
+                all_lineups.append(best_lineup)
+
+        # Restore original settings
+        self.simulator.n_simulations = original_n_sims
+        self.field = original_field
+
+        # Select lineup with highest salary usage
+        if all_lineups:
+            highest_salary_lineup = max(all_lineups, key=lambda x: x.total_salary)
+
+            print(f"\n🏆 NFL CONSENSUS RESULTS")
+            print("=" * 50)
+            print(f"Selected lineup with highest salary: ${highest_salary_lineup.total_salary:,}")
+            print(f"Salary usage: {highest_salary_lineup.total_salary/50000*100:.1f}%")
+            print(f"GPP score: {highest_salary_lineup.gpp_score:.1f}")
+
+            self.generated_lineups.append(highest_salary_lineup)
+            print(f"✅ Selected highest-salary consensus lineup")
+            return [highest_salary_lineup]
+        else:
+            print("❌ Error: No lineups generated")
+            return []
+
+    def _optimize_duplicate_consensus(self) -> List[BaseLineup]:
+        """General consensus: Run until duplicate found (for non-NFL sports)."""
+        import random
+        print(f"\n🎯 Generating consensus {self.sport.upper()} lineup using duplicate-detection approach...")
+        print("=" * 80)
+        print("Running seeds until duplicate lineup found (max 100 seeds)")
+        print("=" * 80)
+
+        # Store original simulation count and field
+        original_n_sims = self.simulator.n_simulations
+        original_field = self.field
+
+        # Set parameters for consensus runs
+        self.simulator.n_simulations = 25000
+        seen_lineups = set()
+        all_lineups = []
+        max_seeds = 100
+
+        for seed in range(1, max_seeds + 1):
+            print(f"🎲 Seed {seed:2d}/100 ({seed:3d}% complete)...")
 
             # Set seed for reproducibility
             random.seed(seed)
@@ -376,33 +450,42 @@ class BaseOptimizer(ABC):
             if best_candidates:
                 best_lineup = best_candidates[0]
                 lineup_signature = tuple(sorted(p.player_id for p in best_lineup.players))
+
+                # Check for duplicate
+                if lineup_signature in seen_lineups:
+                    # Found duplicate! This is true consensus
+                    print(f"\n🏆 DUPLICATE FOUND!")
+                    print("=" * 50)
+                    print(f"Lineup appeared twice after {seed} seeds - TRUE CONSENSUS!")
+
+                    # Restore original settings
+                    self.simulator.n_simulations = original_n_sims
+                    self.field = original_field
+
+                    self.generated_lineups.append(best_lineup)
+                    print(f"✅ Selected consensus lineup (duplicate at seed {seed})")
+                    return [best_lineup]
+
+                # Add to seen lineups
+                seen_lineups.add(lineup_signature)
                 all_lineups.append((lineup_signature, best_lineup))
 
         # Restore original settings
         self.simulator.n_simulations = original_n_sims
         self.field = original_field
 
-        # Find consensus lineup
-        lineup_counts = Counter(sig for sig, _ in all_lineups)
-        most_common_sig, frequency = lineup_counts.most_common(1)[0]
-
-        print(f"\n🏆 CONSENSUS RESULTS")
+        # No duplicates found - fall back to highest GPP score
+        print(f"\n🏆 NO DUPLICATES FOUND")
         print("=" * 50)
-        print(f"Most common lineup appeared: {frequency}/25 times ({frequency/25*100:.1f}%)")
+        print(f"All {max_seeds} lineups were unique - selecting highest GPP score")
 
-        # Get the actual lineup object for the consensus signature
-        consensus_lineup = None
-        for sig, lineup in all_lineups:
-            if sig == most_common_sig:
-                consensus_lineup = lineup
-                break
-
-        if consensus_lineup:
-            self.generated_lineups.append(consensus_lineup)
-            print(f"✅ Selected consensus lineup with {frequency}/25 seed agreement")
-            return [consensus_lineup]
+        if all_lineups:
+            best_lineup = max(all_lineups, key=lambda x: x[1].gpp_score)[1]
+            self.generated_lineups.append(best_lineup)
+            print(f"✅ Selected best lineup (GPP score: {best_lineup.gpp_score:.1f})")
+            return [best_lineup]
         else:
-            print("❌ Error: Could not find consensus lineup")
+            print("❌ Error: No lineups generated")
             return []
 
     def _apply_deterministic_selection(self, candidates: List[BaseLineup],
