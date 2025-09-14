@@ -65,19 +65,35 @@ def _import_nfl_optimizer():
     return NFLOptimizer
 
 
-def load_processed_data(sport: str, pid: str, site: SiteCode = SiteCode.DK) -> pd.DataFrame:
+def load_processed_data(sport: str, pid: str, site: SiteCode = SiteCode.DK, main_slate_only: bool = True) -> pd.DataFrame:
     """Load processed CSV data."""
     data_path = Path(f"data/{sport}/{pid}/{site.value}/csv")
     csv_file = data_path / "extracted.csv"
-    
+
     if not csv_file.exists():
         raise FileNotFoundError(
             f"No processed data found: {csv_file}\n"
             f"Run: python process_data.py --sport {sport} --pid {pid} --site {site.value}"
         )
-    
+
     df = pd.read_csv(csv_file)
-    print(f"📄 Loaded {len(df)} players from: {csv_file}")
+    original_count = len(df)
+    print(f"📄 Loaded {original_count} players from: {csv_file}")
+
+    # Filter to main slate only for NFL (Sunday 1:05 PM - 1:25 PM EST games)
+    if sport.lower() == 'nfl' and main_slate_only:
+        if 'game_info' in df.columns:
+            # Main slate: Sunday afternoon games only (exclude Monday Night Football)
+            main_slate_times = ['1:05 PM', '1:25 PM']
+            main_slate_mask = df['game_info'].str.contains('|'.join(main_slate_times), na=False)
+            df = df[main_slate_mask].copy()
+
+            filtered_count = len(df)
+            excluded_count = original_count - filtered_count
+            if excluded_count > 0:
+                print(f"🎯 Main slate filter: {filtered_count} players (excluded {excluded_count} non-main slate)")
+                print(f"   Included times: {', '.join(main_slate_times)}")
+
     return df
 
 
