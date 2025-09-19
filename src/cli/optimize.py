@@ -25,6 +25,7 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, List, Optional
 import time
+from datetime import datetime, timedelta
 from src.models.site import SiteCode
 
 from src.optimization.base_optimizer import BaseOptimizer
@@ -65,8 +66,17 @@ def _import_nfl_optimizer():
     return NFLOptimizer
 
 
-def load_processed_data(sport: str, pid: str, site: SiteCode = SiteCode.DK, main_slate_only: bool = True) -> pd.DataFrame:
-    """Load processed CSV data."""
+def load_processed_data(sport: str, pid: str, site: SiteCode = SiteCode.DK,
+                       start_time: str = None, end_time: str = None) -> pd.DataFrame:
+    """Load processed CSV data with optional datetime filtering.
+
+    Args:
+        sport: Sport type (nfl, mma, etc.)
+        pid: Contest/event identifier
+        site: DFS site code
+        start_time: Start datetime in format 'YYYY-MM-DD HH:MM' (24hr)
+        end_time: End datetime in format 'YYYY-MM-DD HH:MM' (24hr)
+    """
     data_path = Path(f"data/{sport}/{pid}/{site.value}/csv")
     csv_file = data_path / "extracted.csv"
 
@@ -80,19 +90,55 @@ def load_processed_data(sport: str, pid: str, site: SiteCode = SiteCode.DK, main
     original_count = len(df)
     print(f"📄 Loaded {original_count} players from: {csv_file}")
 
-    # Filter to main slate only for NFL (Sunday 1:05 PM - 1:25 PM EST games)
-    if sport.lower() == 'nfl' and main_slate_only:
-        if 'game_info' in df.columns:
-            # Main slate: Sunday afternoon games only (exclude Monday Night Football)
-            main_slate_times = ['1:05 PM', '1:25 PM']
-            main_slate_mask = df['game_info'].str.contains('|'.join(main_slate_times), na=False)
-            df = df[main_slate_mask].copy()
+    # Apply datetime filtering for NFL
+    if sport.lower() == 'nfl' and (start_time or end_time):
+        if 'game_datetime' in df.columns:
+            # Convert game_datetime string to datetime object
+            df['game_dt'] = pd.to_datetime(df['game_datetime'])
 
-            filtered_count = len(df)
-            excluded_count = original_count - filtered_count
-            if excluded_count > 0:
-                print(f"🎯 Main slate filter: {filtered_count} players (excluded {excluded_count} non-main slate)")
-                print(f"   Included times: {', '.join(main_slate_times)}")
+            # Parse filter times
+            if start_time:
+                start_dt = datetime.strptime(start_time, '%Y-%m-%d %H:%M')
+            else:
+                start_dt = datetime.min
+
+            if end_time:
+                end_dt = datetime.strptime(end_time, '%Y-%m-%d %H:%M')
+            else:
+                end_dt = datetime.max
+
+            # Filter by datetime
+            mask = (df['game_dt'] >= start_dt) & (df['game_dt'] <= end_dt)
+            filtered_df = df[mask].copy()
+
+            # Get unique games for summary
+            if 'game_info' in df.columns:
+                included_games = filtered_df[['game_info', 'game_dt']].drop_duplicates()
+                excluded_df = df[~mask]
+                excluded_games = excluded_df[['game_info', 'game_dt']].drop_duplicates()
+
+                filtered_count = len(filtered_df)
+                excluded_count = original_count - filtered_count
+
+                print(f"🎯 Time filter: {start_time or 'any'} to {end_time or 'any'}")
+                print(f"   Players: {filtered_count} included, {excluded_count} excluded")
+
+                if len(included_games) > 0:
+                    print(f"   Games included ({len(included_games)}):")
+                    for _, row in included_games.sort_values('game_dt').iterrows():
+                        print(f"      • {row['game_info']} - {row['game_dt'].strftime('%a %m/%d %I:%M %p')}")
+
+                if len(excluded_games) > 0:
+                    print(f"   Games excluded ({len(excluded_games)}):")
+                    for _, row in excluded_games.sort_values('game_dt').head(3).iterrows():
+                        print(f"      • {row['game_info']} - {row['game_dt'].strftime('%a %m/%d %I:%M %p')}")
+                    if len(excluded_games) > 3:
+                        print(f"      ... and {len(excluded_games) - 3} more")
+
+                df = filtered_df.drop(columns=['game_dt'])
+        else:
+            print("⚠️  Warning: game_datetime column not found - skipping time filter")
+            print("   Re-run process_data.py to include game timestamps")
 
     return df
 
@@ -137,26 +183,29 @@ def display_lineup_summary(lineups: List, sport: str):
             print(f"   99th Percentile: {best_lineup.percentile_99:.1f}")
 
 
-def export_lineups(lineups: List, sport: str, pid: str, site: SiteCode, output_format: str = 'csv', contest_type: str = 'gpp') -> Path:
-    """Export lineups to file."""
+def export_lineups(lineups: List, sport: str, pid: str, site: SiteCode, output_format: str = 'csv', contest_type: str = 'gpp', slate_id: str = None) -> Path:
+    """Export lineups to file with optional slate identifier."""
     output_dir = Path(f"data/{sport}/{pid}/{site.value}/lineups")
     output_dir.mkdir(exist_ok=True)
 
     if output_format.lower() == 'csv':
         # Use sport-specific CSV export if available
         if sport.lower() == 'nfl':
-            return _export_nfl_lineups_csv(lineups, output_dir, pid, contest_type)
+            return _export_nfl_lineups_csv(lineups, output_dir, pid, contest_type, slate_id)
         else:
-            return _export_lineups_csv(lineups, output_dir, pid, contest_type)
+            return _export_lineups_csv(lineups, output_dir, pid, contest_type, slate_id)
     elif output_format.lower() == 'dk':
-        return _export_lineups_dk(lineups, output_dir, pid, contest_type)
+        return _export_lineups_dk(lineups, output_dir, pid, contest_type, slate_id)
     else:
         raise ValueError(f"Unsupported export format: {output_format}")
 
 
-def _export_nfl_lineups_csv(lineups: List, output_dir: Path, pid: str, contest_type: str = 'gpp') -> Path:
+def _export_nfl_lineups_csv(lineups: List, output_dir: Path, pid: str, contest_type: str = 'gpp', slate_id: str = None) -> Path:
     """Export NFL lineups to detailed CSV format with NFL position data."""
-    output_file = output_dir / f"lineups_{pid}_{contest_type}.csv"
+    if slate_id:
+        output_file = output_dir / f"lineups_{pid}_{slate_id}_{contest_type}.csv"
+    else:
+        output_file = output_dir / f"lineups_{pid}_{contest_type}.csv"
 
     # Sort lineups by GPP score (highest first)
     if lineups and hasattr(lineups[0], 'gpp_score'):
@@ -203,9 +252,12 @@ def _export_nfl_lineups_csv(lineups: List, output_dir: Path, pid: str, contest_t
     return output_file
 
 
-def _export_lineups_csv(lineups: List, output_dir: Path, pid: str, contest_type: str = 'gpp') -> Path:
+def _export_lineups_csv(lineups: List, output_dir: Path, pid: str, contest_type: str = 'gpp', slate_id: str = None) -> Path:
     """Export lineups to detailed CSV format."""
-    output_file = output_dir / f"lineups_{pid}_{contest_type}.csv"
+    if slate_id:
+        output_file = output_dir / f"lineups_{pid}_{slate_id}_{contest_type}.csv"
+    else:
+        output_file = output_dir / f"lineups_{pid}_{contest_type}.csv"
     
     # Sort lineups by GPP score (highest first)
     if lineups and hasattr(lineups[0], 'gpp_score'):
@@ -251,9 +303,12 @@ def _export_lineups_csv(lineups: List, output_dir: Path, pid: str, contest_type:
     return output_file
 
 
-def _export_lineups_dk(lineups: List, output_dir: Path, pid: str, contest_type: str = 'gpp') -> Path:
+def _export_lineups_dk(lineups: List, output_dir: Path, pid: str, contest_type: str = 'gpp', slate_id: str = None) -> Path:
     """Export lineups in DraftKings upload format."""
-    output_file = output_dir / f"dk_upload_{pid}_{contest_type}.csv"
+    if slate_id:
+        output_file = output_dir / f"dk_upload_{pid}_{slate_id}_{contest_type}.csv"
+    else:
+        output_file = output_dir / f"dk_upload_{pid}_{contest_type}.csv"
     
     # This would need sport-specific position mapping
     # For now, just basic format
@@ -302,6 +357,10 @@ def main():
                        help='Only display summary of existing lineups')
     parser.add_argument('--consensus', action='store_true',
                        help='Use multi-seed consensus mode for perfect determinism (single lineup only)')
+    parser.add_argument('--start-time', type=str, default=None,
+                       help='Start datetime for slate (NFL only) - format: YYYY-MM-DD HH:MM (24hr, EST)')
+    parser.add_argument('--end-time', type=str, default=None,
+                       help='End datetime for slate (NFL only) - format: YYYY-MM-DD HH:MM (24hr, EST)')
     
     args = parser.parse_args()
     
@@ -337,7 +396,9 @@ def main():
         
         # Load processed data
         print("\n1️⃣ Loading processed data...")
-        df = load_processed_data(args.sport, args.pid, site)
+        df = load_processed_data(args.sport, args.pid, site,
+                                start_time=args.start_time,
+                                end_time=args.end_time)
         
         if args.summary_only:
             # Just display summary of existing lineups
@@ -405,7 +466,21 @@ def main():
         # Export lineups
         print(f"\n6️⃣ Exporting lineups...")
         contest_type = "cash" if args.cash_game else "gpp"
-        output_file = export_lineups(lineups, args.sport, args.pid, site, args.export_format, contest_type)
+
+        # Create slate identifier from datetime filters
+        slate_id = None
+        if args.sport.lower() == 'nfl' and (args.start_time or args.end_time):
+            if args.start_time and '09-15' in args.start_time:
+                slate_id = 'monday'
+            elif args.start_time and '09-14 13:00' in args.start_time:
+                slate_id = 'main'
+            elif args.start_time and '09-11' in args.start_time:
+                slate_id = 'thursday'
+            elif args.start_time:
+                # Use date from start time as slate ID
+                slate_id = args.start_time.split(' ')[0].replace('-', '')
+
+        output_file = export_lineups(lineups, args.sport, args.pid, site, args.export_format, contest_type, slate_id)
         
         # Display summary
         display_lineup_summary(lineups, args.sport)

@@ -3,12 +3,14 @@
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 from abc import ABC, abstractmethod
+from loguru import logger
 
 from ..models.player import Position
 from ..models.site import SiteCode
 from ..data.llm_newsletter_processor import LLMNewsletterProcessor, NewsletterExtraction
+from ..config.projection_config import NEWSLETTER_CONFIG, OWNERSHIP_CONFIG, VALIDATION_CONFIG
 
 
 class BaseDataProcessor(ABC):
@@ -85,24 +87,25 @@ class BaseDataProcessor(ABC):
         extraction = self.process_newsletter_with_llm()
 
         if not extraction or not extraction.players:
-            print("📰 No newsletter signals found - using default values")
+            logger.info("No newsletter signals found - using default values")
             return df
 
-        # Apply signals from LLM extraction
+        # Apply signals from LLM extraction with improved matching
         applied_count = 0
         for signal in extraction.players:
-            # Find matching players
-            name_upper = signal.name.upper()
-            mask = df['name'].str.upper().str.contains(name_upper, na=False)
-            matched_players = df[mask]
+            matched_indices = self._find_matching_players(df, signal.name)
 
-            if len(matched_players) > 0:
-                df.loc[mask, 'newsletter_signal'] = signal.signal
-                df.loc[mask, 'newsletter_confidence'] = signal.confidence
-                df.loc[mask, 'newsletter_reason'] = signal.reason
-                df.loc[mask, 'ownership_delta'] = signal.ownership_delta
-                df.loc[mask, 'ceiling_delta'] = signal.ceiling_delta
-                applied_count += len(matched_players)
+            if matched_indices:
+                df.loc[matched_indices, 'newsletter_signal'] = signal.signal
+                df.loc[matched_indices, 'newsletter_confidence'] = signal.confidence
+                df.loc[matched_indices, 'newsletter_reason'] = signal.reason
+                df.loc[matched_indices, 'ownership_delta'] = signal.ownership_delta
+                df.loc[matched_indices, 'ceiling_delta'] = signal.ceiling_delta
+                applied_count += len(matched_indices)
+
+                logger.info(f"Matched '{signal.name}' to {len(matched_indices)} players: {signal.signal}")
+            else:
+                logger.warning(f"No match found for newsletter player: '{signal.name}'")
 
         # Count applied signals by type
         targets_count = len(df[df['newsletter_signal'] == 'target'])
@@ -115,69 +118,153 @@ class BaseDataProcessor(ABC):
 
         return df
 
+    def _find_matching_players(self, df: pd.DataFrame, newsletter_name: str) -> list:
+        """Find players matching newsletter name with improved confidence."""
+        newsletter_clean = newsletter_name.upper().strip()
+
+        # Try exact match first
+        exact_match = df[df['name'].str.upper() == newsletter_clean].index.tolist()
+        if exact_match:
+            logger.debug(f"Exact match found for '{newsletter_name}'")
+            return exact_match
+
+        # Try partial match with whole words
+        mask = df['name'].str.upper().str.contains(newsletter_clean, na=False, regex=False)
+        partial_matches = df[mask].index.tolist()
+
+        if len(partial_matches) == 1:
+            logger.debug(f"Single partial match found for '{newsletter_name}'")
+            return partial_matches
+        elif len(partial_matches) > 1:
+            logger.warning(f"Multiple partial matches for '{newsletter_name}': {df.loc[partial_matches, 'name'].tolist()}")
+            return partial_matches
+
+        # Try last name only
+        if ' ' in newsletter_clean:
+            last_name = newsletter_clean.split()[-1]
+            last_name_mask = df['name'].str.upper().str.contains(last_name, na=False, regex=False)
+            last_name_matches = df[last_name_mask].index.tolist()
+
+            if len(last_name_matches) == 1:
+                logger.debug(f"Last name match found for '{newsletter_name}'")
+                return last_name_matches
+            elif len(last_name_matches) > 1:
+                logger.warning(f"Multiple last name matches for '{newsletter_name}': {df.loc[last_name_matches, 'name'].tolist()}")
+
+        return []
+
+    def _apply_target_adjustments(self, df: pd.DataFrame, idx: int, row: pd.Series) -> None:
+        """Apply adjustments for target players."""
+        confidence = row['newsletter_confidence']
+
+        # Use config values instead of hardcoded
+        proj_mult = (NEWSLETTER_CONFIG.TARGET_BASE_MULTIPLIER +
+                    (NEWSLETTER_CONFIG.TARGET_CONFIDENCE_MULTIPLIER * confidence))
+
+        df.loc[idx, 'updated_projection'] = row['projection'] * proj_mult
+        df.loc[idx, 'updated_floor'] = row['floor'] * proj_mult
+
+        # Use LLM-calculated ceiling delta
+        ceiling_delta = row['ceiling_delta']
+        df.loc[idx, 'updated_ceiling'] = row['ceiling'] * (1 + ceiling_delta)
+
+        # Use LLM-calculated ownership delta
+        ownership_delta = row['ownership_delta']
+        new_ownership = max(NEWSLETTER_CONFIG.MIN_OWNERSHIP,
+                           row['ownership'] + (ownership_delta * 100))
+        df.loc[idx, 'updated_ownership'] = new_ownership
+
+    def _apply_avoid_adjustments(self, df: pd.DataFrame, idx: int, row: pd.Series) -> None:
+        """Apply adjustments for avoid players."""
+        confidence = row['newsletter_confidence']
+
+        # Use config values instead of hardcoded
+        proj_mult = (NEWSLETTER_CONFIG.AVOID_BASE_MULTIPLIER -
+                    (NEWSLETTER_CONFIG.AVOID_CONFIDENCE_MULTIPLIER * confidence))
+
+        df.loc[idx, 'updated_projection'] = row['projection'] * proj_mult
+        df.loc[idx, 'updated_floor'] = row['floor'] * proj_mult
+
+        # Use LLM-calculated ceiling delta
+        ceiling_delta = row['ceiling_delta']
+        df.loc[idx, 'updated_ceiling'] = row['ceiling'] * (1 + ceiling_delta)
+
+        # Use LLM-calculated ownership delta
+        ownership_delta = row['ownership_delta']
+        df.loc[idx, 'updated_ownership'] = row['ownership'] + (ownership_delta * 100)
+
+    def _validate_projections(self, df: pd.DataFrame) -> Tuple[bool, list]:
+        """Validate projection adjustments are within reasonable bounds."""
+        issues = []
+
+        # Check projection bounds
+        proj_issues = df[
+            (df['updated_projection'] < VALIDATION_CONFIG.MIN_PROJECTION) |
+            (df['updated_projection'] > VALIDATION_CONFIG.MAX_PROJECTION)
+        ]
+        if not proj_issues.empty:
+            issues.append(f"Projection out of bounds: {len(proj_issues)} players")
+            logger.warning(f"Projection issues: {proj_issues[['name', 'updated_projection']].to_dict('records')}")
+
+        # Check ceiling bounds
+        ceiling_issues = df[
+            (df['updated_ceiling'] < VALIDATION_CONFIG.MIN_CEILING) |
+            (df['updated_ceiling'] > VALIDATION_CONFIG.MAX_CEILING)
+        ]
+        if not ceiling_issues.empty:
+            issues.append(f"Ceiling out of bounds: {len(ceiling_issues)} players")
+            logger.warning(f"Ceiling issues: {ceiling_issues[['name', 'updated_ceiling']].to_dict('records')}")
+
+        # Check ownership bounds
+        ownership_issues = df[
+            (df['updated_ownership'] < NEWSLETTER_CONFIG.MIN_OWNERSHIP) |
+            (df['updated_ownership'] > NEWSLETTER_CONFIG.MAX_OWNERSHIP)
+        ]
+        if not ownership_issues.empty:
+            issues.append(f"Ownership out of bounds: {len(ownership_issues)} players")
+            logger.warning(f"Ownership issues: {ownership_issues[['name', 'updated_ownership']].to_dict('records')}")
+
+        return len(issues) == 0, issues
+
     def apply_projection_adjustments(self, df: pd.DataFrame) -> pd.DataFrame:
         """Base implementation with newsletter signals and salary-ownership correlation."""
         df = df.copy()
+
         # Always add updated columns - copy originals as default
         df['updated_projection'] = df['projection']
         df['updated_floor'] = df['floor']
         df['updated_ceiling'] = df['ceiling']
         df['updated_ownership'] = df['ownership']
 
-        # Apply newsletter signals (universal across sports)
+        # Apply newsletter signals using separate functions
         newsletter_players = df[df['newsletter_signal'] != 'neutral']
         for idx, row in newsletter_players.iterrows():
             signal = row['newsletter_signal']
-            confidence = row['newsletter_confidence']
-            ceiling_delta = row['ceiling_delta']
-            ownership_delta = row['ownership_delta']
 
             if signal == 'target':
-                # Targets get projection boost based on confidence
-                proj_mult = 1.02 + (0.08 * confidence)  # 1.02-1.10x
-                df.loc[idx, 'updated_projection'] = row['projection'] * proj_mult
-                df.loc[idx, 'updated_floor'] = row['floor'] * proj_mult
-                # Use LLM-calculated ceiling delta
-                df.loc[idx, 'updated_ceiling'] = row['ceiling'] * (1 + ceiling_delta)
-                # Use LLM-calculated ownership delta
-                df.loc[idx, 'updated_ownership'] = max(0.1, row['ownership'] + (ownership_delta * 100))
-
+                self._apply_target_adjustments(df, idx, row)
             elif signal == 'avoid':
-                # Avoids get projection reduction based on confidence
-                proj_mult = 0.96 - (0.06 * confidence)  # 0.90-0.96x
-                df.loc[idx, 'updated_projection'] = row['projection'] * proj_mult
-                df.loc[idx, 'updated_floor'] = row['floor'] * proj_mult
-                # Use LLM-calculated ceiling delta
-                df.loc[idx, 'updated_ceiling'] = row['ceiling'] * (1 + ceiling_delta)
-                # Use LLM-calculated ownership delta
-                df.loc[idx, 'updated_ownership'] = row['ownership'] + (ownership_delta * 100)
+                self._apply_avoid_adjustments(df, idx, row)
 
-        # Apply bounds validation
-        print("   🔒 Applying bounds validation...")
-        # Clamp ownership to [0, 100]
-        df['updated_ownership'] = np.clip(df['updated_ownership'], 0, 100)
+        # Apply ownership bounds
+        logger.debug("Applying ownership bounds validation")
+        df['updated_ownership'] = np.clip(df['updated_ownership'],
+                                        NEWSLETTER_CONFIG.MIN_OWNERSHIP,
+                                        NEWSLETTER_CONFIG.MAX_OWNERSHIP)
 
-        # Ensure ceiling >= projection
-        mask = df['updated_ceiling'] < df['updated_projection']
-        df.loc[mask, 'updated_ceiling'] = df.loc[mask, 'updated_projection'] * 1.1
-
-        # Ensure floor <= projection
-        mask = df['updated_floor'] > df['updated_projection']
-        df.loc[mask, 'updated_floor'] = df.loc[mask, 'updated_projection'] * 0.8
-
-        # Ensure all values are non-negative
-        df['updated_projection'] = np.maximum(df['updated_projection'], 0.1)
-        df['updated_floor'] = np.maximum(df['updated_floor'], 0)
-        df['updated_ceiling'] = np.maximum(df['updated_ceiling'], df['updated_projection'])
-
-        # Apply salary-ownership correlation model (universal for all sports)
-        print("   💰 Applying salary-ownership correlation model...")
+        # Apply salary-ownership correlation model
+        logger.debug("Applying salary-ownership correlation model")
         df = self._apply_salary_ownership_correlation(df)
+
+        # Validate all adjustments
+        is_valid, issues = self._validate_projections(df)
+        if not is_valid:
+            logger.error(f"Validation failed with {len(issues)} issues: {issues}")
 
         return df
 
     def _apply_salary_ownership_correlation(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Apply salary-ownership correlation model with 50/50 weighting."""
+        """Apply salary-ownership correlation model using config values."""
         df = df.copy()
 
         # Calculate salary-based ownership expectations
@@ -188,18 +275,24 @@ class BaseDataProcessor(ABC):
         if salary_range > 0:
             # Normalize salaries to 0-1 range
             normalized_salary = (df['salary'] - min_salary) / salary_range
-            # Convert to ownership expectations (2% to 20% range based on salary)
-            salary_based_ownership = 2 + (normalized_salary * 18)
+            # Convert to ownership expectations using config values
+            ownership_range = OWNERSHIP_CONFIG.MAX_SALARY_OWNERSHIP - OWNERSHIP_CONFIG.MIN_SALARY_OWNERSHIP
+            salary_based_ownership = OWNERSHIP_CONFIG.MIN_SALARY_OWNERSHIP + (normalized_salary * ownership_range)
         else:
-            # If all salaries are the same, use uniform ownership
-            salary_based_ownership = pd.Series([15.0] * len(df), index=df.index)
+            # If all salaries are the same, use default ownership
+            salary_based_ownership = pd.Series([OWNERSHIP_CONFIG.DEFAULT_OWNERSHIP] * len(df), index=df.index)
 
-        # Create blended ownership with 50/50 weighting
+        # Create blended ownership using config weights
         original_ownership = df['updated_ownership']
-        blended_ownership = (0.5 * original_ownership) + (0.5 * salary_based_ownership)
+        blended_ownership = (
+            (OWNERSHIP_CONFIG.ORIGINAL_WEIGHT * original_ownership) +
+            (OWNERSHIP_CONFIG.SALARY_WEIGHT * salary_based_ownership)
+        )
 
-        # Ensure bounds [0.1, 100]
-        df['salary_ownership'] = np.clip(blended_ownership, 0.1, 100.0)
+        # Ensure bounds
+        df['salary_ownership'] = np.clip(blended_ownership,
+                                       NEWSLETTER_CONFIG.MIN_OWNERSHIP,
+                                       NEWSLETTER_CONFIG.MAX_OWNERSHIP)
 
         return df
 
@@ -242,10 +335,18 @@ class BaseDataProcessor(ABC):
         print(f"Avg Projection: {df['updated_projection'].mean():.1f} pts")
         print(f"Avg Ownership: {df['updated_ownership'].mean():.1f}%")
 
-        # Newsletter signals summary
+        # Newsletter signals summary with reasons
         signals = df['newsletter_signal'].value_counts()
         if len(signals) > 1:
             print(f"\\nNewsletter Signals:")
             for signal, count in signals.items():
                 if signal != 'neutral':
                     print(f"  {signal}: {count}")
+
+            # Show basic newsletter signals for reference
+            newsletter_players = df[df['newsletter_signal'] != 'neutral']
+            if not newsletter_players.empty:
+                print(f"\\nNewsletter Players:")
+                for _, player in newsletter_players.iterrows():
+                    signal_icon = '🎯' if player['newsletter_signal'] == 'target' else '⛔'
+                    print(f"  {signal_icon} {player['name']}")

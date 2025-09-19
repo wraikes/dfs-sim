@@ -5,9 +5,11 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from typing import Dict, List, Optional, Any
+from loguru import logger
 
 from .base import BaseDataProcessor
 from ..models.player import Position
+from ..config.nascar_config import NASCAR_CONFIG
 
 
 class NASCARDataProcessor(BaseDataProcessor):
@@ -21,28 +23,17 @@ class NASCARDataProcessor(BaseDataProcessor):
         if not main_json_file.exists():
             raise FileNotFoundError(f"No raw.json file found in {self.json_path}")
 
-        print(f"   📄 Loading JSON: {main_json_file}")
+        logger.info(f"Loading NASCAR JSON: {main_json_file}")
 
         with open(main_json_file, 'r') as f:
             data = json.load(f)
 
-        # Extract salary data from SalaryContainerJson (NASCAR-specific parsing)
+        # Extract salary data from SalaryContainerJson
         try:
             salary_data = json.loads(data['SalaryContainerJson'])
 
-            # Extract ownership data from Ownership section
-            ownership_map = {}
-            if 'Ownership' in data and 'Projected' in data['Ownership']:
-                projected = data['Ownership']['Projected']
-                # Get the contest ID (should be one key in Projected)
-                contest_ids = list(projected.keys())
-                if contest_ids:
-                    contest_id = contest_ids[0]
-                    for ownership_player in projected[contest_id]:
-                        salary_id = ownership_player.get('SalaryId')
-                        owned_pct = ownership_player.get('Owned', 10.0)
-                        if salary_id:
-                            ownership_map[salary_id] = owned_pct
+            # Extract ownership data (could be moved to base class helper)
+            ownership_map = self._extract_ownership_data(data)
 
             drivers = []
 
@@ -57,19 +48,18 @@ class NASCARDataProcessor(BaseDataProcessor):
                     'player_id': player_id,
                     'name': player_data['Name'],
                     'salary': player_data['SAL'],
-                    'projection': player_data.get('PP', 0.0),  # PP = Projected Points
-                    'floor': player_data.get('Floor', 0.0),
-                    'ceiling': player_data.get('Ceil', 0.0),
+                    'projection': player_data.get('PP'),  # NULL if not present
+                    'floor': player_data.get('Floor'),  # NULL if not present
+                    'ceiling': player_data.get('Ceil'),  # NULL if not present
                     'ownership': ownership,
-                    'std_dev': 35.0,  # Higher variance for NASCAR (crashes, mechanical issues)
-                    'team': player_data.get('TeamName', ''),  # NASCAR team
-                    'manufacturer': '',  # Will extract from matchup data
-                    'starting_position': 20,  # Default, will extract from matchup data
-                    'agg_proj': player_data.get('AggProj', 0.0),  # Aggregate projection
-                    'confidence': player_data.get('Conf', 50),  # Projection confidence
-                    'game_info': player_data.get('GI', ''),  # Game info with race details
-                    'stars': player_data.get('Stars', 3),  # Player star rating
-                    'alert_score': player_data.get('AlertScore', 0),  # Alert/attention score
+                    'team': player_data.get('TeamName'),  # NASCAR team
+                    'manufacturer': None,  # Will extract from matchup data
+                    'starting_position': None,  # Will extract from matchup data
+                    'agg_proj': player_data.get('AggProj'),  # Aggregate projection
+                    'confidence': player_data.get('Conf'),  # Projection confidence (0-100 scale)
+                    'game_info': player_data.get('GI'),  # Game info with race details
+                    'stars': player_data.get('Stars'),  # Player star rating
+                    'alert_score': player_data.get('AlertScore'),  # Alert/attention score
                 }
                 drivers.append(driver)
         except (json.JSONDecodeError, KeyError) as e:
@@ -88,9 +78,6 @@ class NASCARDataProcessor(BaseDataProcessor):
 
         # Advanced NASCAR features for correlation/variance modeling
         practice_lap_time_map = {}  # Practice performance (variance predictor)
-        bristol_avg_finish_map = {} # Track-specific performance
-        bristol_fp_per_race_map = {}# Track-specific fantasy points
-        short_track_avg_map = {}    # Short track category performance
 
         for table in data.get('MatchupData', []):
             table_name = table.get('Name', '').lower()
@@ -106,16 +93,16 @@ class NASCARDataProcessor(BaseDataProcessor):
 
                 # Extract data based on table ID (more reliable than name)
                 if table_id == 'pmatchup':  # Practice & Qualifying
-                    if 'Qualifying Pos' in col_data and col_data['Qualifying Pos'] not in ['0', '', None]:
-                        starting_pos_map[player_id] = int(col_data['Qualifying Pos'])
-                    if 'Practice Best Lap Speed' in col_data and col_data['Practice Best Lap Speed'] not in ['0', '', None]:
-                        practice_speed_map[player_id] = float(col_data['Practice Best Lap Speed'])
-                    if 'Qualifying Best Lap Speed' in col_data and col_data['Qualifying Best Lap Speed'] not in ['0', '', None]:
-                        practice_speed_map[player_id] = float(col_data['Qualifying Best Lap Speed'])
-                    if 'Vegas Odds' in col_data and col_data['Vegas Odds'] not in ['0', '', None]:
-                        vegas_odds_map[player_id] = float(col_data['Vegas Odds'])
-                    if 'Practice Best Lap Time' in col_data and col_data['Practice Best Lap Time'] not in ['0', '', None]:
-                        practice_lap_time_map[player_id] = float(col_data['Practice Best Lap Time'])
+                    if 'Qualifying Pos' in col_data:
+                        starting_pos_map[player_id] = int(self._safe_float(col_data['Qualifying Pos'], 20))
+                    if 'Practice Best Lap Speed' in col_data:
+                        practice_speed_map[player_id] = self._safe_float(col_data['Practice Best Lap Speed'])
+                    if 'Qualifying Best Lap Speed' in col_data:
+                        practice_speed_map[player_id] = self._safe_float(col_data['Qualifying Best Lap Speed'])
+                    if 'Vegas Odds' in col_data:
+                        vegas_odds_map[player_id] = self._safe_float(col_data['Vegas Odds'])
+                    if 'Practice Best Lap Time' in col_data:
+                        practice_lap_time_map[player_id] = self._safe_float(col_data['Practice Best Lap Time'], 16.0)
 
                 elif table_id == 'timatchup':  # Track Info
                     if 'Surface' in col_data:
@@ -139,39 +126,35 @@ class NASCARDataProcessor(BaseDataProcessor):
                         except (ValueError, TypeError):
                             track_type_map[player_id] = 'intermediate'
 
-                elif table_id == 'tmatchup':  # @ Bristol Motor Speedway table
-                    if 'Avg. Place' in col_data and col_data['Avg. Place'] not in ['0', '', None]:
-                        bristol_avg_finish_map[player_id] = float(col_data['Avg. Place'])
-                    if 'FP/Race' in col_data and col_data['FP/Race'] not in ['0', '', None]:
-                        bristol_fp_per_race_map[player_id] = float(col_data['FP/Race'])
-
-                elif table_id == 'stmatchup':  # @ Short Tracks table
-                    if 'Avg. Place' in col_data and col_data['Avg. Place'] not in ['0', '', None]:
-                        short_track_avg_map[player_id] = float(col_data['Avg. Place'])
+                elif table_id == 'tmatchup':  # Track-specific table (varies by race)
+                    # Extract track-specific data dynamically
+                    if 'Avg. Place' in col_data or 'Avg Finish' in col_data:
+                        avg_key = 'Avg. Place' if 'Avg. Place' in col_data else 'Avg Finish'
+                        track_info_map[player_id] = track_info_map.get(player_id, {})
+                        track_info_map[player_id]['track_avg_finish'] = self._safe_float(col_data[avg_key], 20.0)
+                    if 'FP/Race' in col_data or 'FPPG' in col_data:
+                        fppg_key = 'FP/Race' if 'FP/Race' in col_data else 'FPPG'
+                        track_info_map[player_id] = track_info_map.get(player_id, {})
+                        track_info_map[player_id]['track_fppg'] = self._safe_float(col_data[fppg_key], 30.0)
 
                 elif 'vegas' in table_name or 'odds' in table_name:
                     # Vegas odds data (if present)
-                    if 'Win Odds' in col_data and col_data['Win Odds'] not in ['0', '', None]:
-                        vegas_odds_map[player_id] = float(col_data['Win Odds'])
+                    if 'Win Odds' in col_data:
+                        vegas_odds_map[player_id] = self._safe_float(col_data['Win Odds'])
 
-        # Add extracted data to dataframe
-        df['starting_position'] = df['player_id'].map(starting_pos_map).fillna(20)
-        df['manufacturer'] = 'Unknown'  # Placeholder - not available in LineStar data
-        df['win_odds'] = df['player_id'].map(vegas_odds_map).fillna(0)
-        df['practice_speed'] = df['player_id'].map(practice_speed_map).fillna(0)
-
-        # Add advanced NASCAR features
-        df['practice_lap_time'] = df['player_id'].map(practice_lap_time_map).fillna(16.0)  # ~125mph default
-        df['bristol_avg_finish'] = df['player_id'].map(bristol_avg_finish_map).fillna(20.0)
-        df['bristol_fp_per_race'] = df['player_id'].map(bristol_fp_per_race_map).fillna(30.0)
-        df['short_track_avg_finish'] = df['player_id'].map(short_track_avg_map).fillna(20.0)
+        # Add extracted data to dataframe - keep as NULL if not found
+        df['starting_position'] = df['player_id'].map(starting_pos_map)
+        df['manufacturer'] = None  # Not available in LineStar data
+        df['win_odds'] = df['player_id'].map(vegas_odds_map)
+        df['practice_speed'] = df['player_id'].map(practice_speed_map)
+        df['practice_lap_time'] = df['player_id'].map(practice_lap_time_map)
 
         # Add track type (same for all drivers in a race)
         if track_type_map:
             track_type = list(track_type_map.values())[0]  # All drivers have same track type
             df['track_type'] = track_type
         else:
-            df['track_type'] = 'intermediate'  # Default fallback
+            df['track_type'] = None  # No track type data available
 
         print(f"   ✅ Parsed {len(df)} drivers from JSON")
         print(f"   🏁 Starting positions: {df['starting_position'].min():.0f} - {df['starting_position'].max():.0f}")
@@ -180,10 +163,26 @@ class NASCARDataProcessor(BaseDataProcessor):
         return df
 
     def calculate_sport_metrics(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate NASCAR-specific metrics and variability features."""
+        """Calculate NASCAR-specific metrics from already extracted data."""
         df = df.copy()
 
-        # Load the main JSON data to access MatchupData
+        # First, validate core fields and filter out incomplete players
+        valid_players = df.dropna(subset=['projection'])
+        invalid_players = df[df['projection'].isna()]
+
+        if not invalid_players.empty:
+            logger.warning(f"Omitting {len(invalid_players)} players due to missing projections:")
+            for _, player in invalid_players.iterrows():
+                logger.warning(f"  - {player['name']}: missing projection data")
+
+        df = valid_players.copy()
+        if df.empty:
+            logger.error("No valid players found - all missing projection data")
+            return df
+
+        # Re-parse JSON only for additional stats not captured in load_raw_data
+        # This is necessary because load_raw_data focuses on basic player info
+        # while this method extracts detailed performance metrics
         main_json_file = self.json_path / "raw.json"
         with open(main_json_file, 'r') as f:
             data = json.load(f)
@@ -207,7 +206,7 @@ class NASCARDataProcessor(BaseDataProcessor):
             'quality_passes_per_race': quality_passes_map,
             'fastest_laps_per_race': fastest_laps_map,
 
-            # Track history
+            # Track history (extracted dynamically from current track table)
             'track_avg_finish': {},
             'track_top5_pct': {},
             'track_fppg': {},
@@ -215,6 +214,10 @@ class NASCARDataProcessor(BaseDataProcessor):
             # Recent form
             'recent_avg_finish': {},
             'recent_fppg': {},
+
+            # DNF risk calculation (derive from available data)
+            'total_races': {},
+            'dnf_pct': {},
         }
 
         # Process MatchupData tables for detailed stats
@@ -231,106 +234,129 @@ class NASCARDataProcessor(BaseDataProcessor):
                 # Extract season stats (Driver Season table)
                 if table_id == 'dSeason':
                     if 'Avg Finish' in col_data:
-                        feature_maps['avg_finish'][player_id] = float(col_data['Avg Finish']) if col_data['Avg Finish'] != '0' else 20
+                        feature_maps['avg_finish'][player_id] = self._safe_float(col_data['Avg Finish'], 20.0)
                     if 'Top Fives' in col_data and 'Races' in col_data:
-                        try:
-                            top5_pct = (float(col_data['Top Fives']) / float(col_data['Races'])) * 100
-                            feature_maps['top5_pct'][player_id] = top5_pct
-                        except (ValueError, ZeroDivisionError):
-                            feature_maps['top5_pct'][player_id] = 0
+                        top_fives = self._safe_float(col_data['Top Fives'])
+                        races = self._safe_float(col_data['Races'], 1.0)  # Avoid division by zero
+                        feature_maps['top5_pct'][player_id] = (top_fives / races) * 100 if races > 0 else 0
                     if 'Top Tens' in col_data and 'Races' in col_data:
-                        try:
-                            top10_pct = (float(col_data['Top Tens']) / float(col_data['Races'])) * 100
-                            feature_maps['top10_pct'][player_id] = top10_pct
-                        except (ValueError, ZeroDivisionError):
-                            feature_maps['top10_pct'][player_id] = 0
+                        top_tens = self._safe_float(col_data['Top Tens'])
+                        races = self._safe_float(col_data['Races'], 1.0)
+                        feature_maps['top10_pct'][player_id] = (top_tens / races) * 100 if races > 0 else 0
                     if 'Laps Led/Race' in col_data:
-                        feature_maps['laps_led_avg'][player_id] = float(col_data['Laps Led/Race']) if col_data['Laps Led/Race'] != '0' else 0
+                        feature_maps['laps_led_avg'][player_id] = self._safe_float(col_data['Laps Led/Race'])
                     if 'FPPG' in col_data:
-                        feature_maps['season_fppg'][player_id] = float(col_data['FPPG']) if col_data['FPPG'] != '0' else 0
+                        feature_maps['season_fppg'][player_id] = self._safe_float(col_data['FPPG'])
+
+                    # Calculate DNF risk from race participation vs finishes
+                    if 'Races' in col_data:
+                        races = self._safe_float(col_data['Races'])
+                        feature_maps['total_races'][player_id] = races
+                        # Estimate DNF rate: drivers with very low FPPG relative to their skill level
+                        # This is a proxy since LineStar doesn't provide direct DNF data
+                        avg_finish = self._safe_float(col_data.get('Avg Finish', 20))
+                        fppg = self._safe_float(col_data.get('FPPG', 0))
+                        if races > 5 and avg_finish > 0:  # Enough sample size
+                            # Expected FPPG based on average finish (rough estimate)
+                            expected_fppg = max(0, 50 - avg_finish * 1.2)  # Linear relationship
+                            if expected_fppg > 0:
+                                fppg_deficit = max(0, expected_fppg - fppg) / expected_fppg
+                                # Convert deficit to estimated DNF rate (capped at 30%)
+                                estimated_dnf = min(30, fppg_deficit * 25)
+                                feature_maps['dnf_pct'][player_id] = estimated_dnf
 
                     # Advanced season stats for correlation/variance modeling
                     if 'Avg Pass Diff' in col_data:
-                        avg_pass_diff_map[player_id] = float(col_data['Avg Pass Diff']) if col_data['Avg Pass Diff'] != '0' else 0
+                        avg_pass_diff_map[player_id] = self._safe_float(col_data['Avg Pass Diff'])
                     if 'Quality Passes/Race' in col_data:
-                        quality_passes_map[player_id] = float(col_data['Quality Passes/Race']) if col_data['Quality Passes/Race'] != '0' else 0
+                        quality_passes_map[player_id] = self._safe_float(col_data['Quality Passes/Race'])
                     if 'Fastest Laps/Race' in col_data:
-                        fastest_laps_map[player_id] = float(col_data['Fastest Laps/Race']) if col_data['Fastest Laps/Race'] != '0' else 0
+                        fastest_laps_map[player_id] = self._safe_float(col_data['Fastest Laps/Race'])
 
-                # Extract track-specific stats (@ Bristol Motor Speedway table)
+                # Extract track-specific stats (dynamic track table)
                 elif table_id == 'tmatchup':
-                    if 'Avg Finish' in col_data:
-                        feature_maps['track_avg_finish'][player_id] = float(col_data['Avg Finish']) if col_data['Avg Finish'] != '0' else 20
-                    if 'Top 5s' in col_data and 'Races' in col_data:
-                        try:
-                            track_top5_pct = (float(col_data['Top 5s']) / float(col_data['Races'])) * 100
-                            feature_maps['track_top5_pct'][player_id] = track_top5_pct
-                        except (ValueError, ZeroDivisionError):
-                            feature_maps['track_top5_pct'][player_id] = 0
-                    if 'FPPG' in col_data:
-                        feature_maps['track_fppg'][player_id] = float(col_data['FPPG']) if col_data['FPPG'] != '0' else 0
+                    if 'Avg Finish' in col_data or 'Avg. Place' in col_data:
+                        avg_key = 'Avg Finish' if 'Avg Finish' in col_data else 'Avg. Place'
+                        feature_maps['track_avg_finish'][player_id] = self._safe_float(col_data[avg_key], 20.0)
+                    if ('Top 5s' in col_data or 'Top Fives' in col_data) and 'Races' in col_data:
+                        top5_key = 'Top 5s' if 'Top 5s' in col_data else 'Top Fives'
+                        top_5s = self._safe_float(col_data[top5_key])
+                        races = self._safe_float(col_data['Races'], 1.0)
+                        feature_maps['track_top5_pct'][player_id] = (top_5s / races) * 100 if races > 0 else 0
+                    if 'FPPG' in col_data or 'FP/Race' in col_data:
+                        fppg_key = 'FPPG' if 'FPPG' in col_data else 'FP/Race'
+                        feature_maps['track_fppg'][player_id] = self._safe_float(col_data[fppg_key])
 
                 # Extract recent form (Driver Last Season table as proxy)
                 elif table_id == 'dLastSeason':
                     if 'Avg Finish' in col_data:
-                        feature_maps['recent_avg_finish'][player_id] = float(col_data['Avg Finish']) if col_data['Avg Finish'] != '0' else 20
+                        feature_maps['recent_avg_finish'][player_id] = self._safe_float(col_data['Avg Finish'], 20.0)
                     if 'FPPG' in col_data:
-                        feature_maps['recent_fppg'][player_id] = float(col_data['FPPG']) if col_data['FPPG'] != '0' else 0
-                    if 'FPPG' in col_data:
-                        feature_maps['season_fppg'][player_id] = float(col_data['FPPG']) if col_data['FPPG'] != '0' else 0
+                        feature_maps['recent_fppg'][player_id] = self._safe_float(col_data['FPPG'])
+                        feature_maps['season_fppg'][player_id] = self._safe_float(col_data['FPPG'])
 
                 # Extract track history
                 elif 'track history' in table_name or 'track stats' in table_name:
                     if 'Avg Finish' in col_data:
-                        feature_maps['track_avg_finish'][player_id] = float(col_data['Avg Finish']) if col_data['Avg Finish'] != '0' else 20
+                        feature_maps['track_avg_finish'][player_id] = self._safe_float(col_data['Avg Finish'], 20.0)
                     if 'Top 5%' in col_data:
-                        feature_maps['track_top5_pct'][player_id] = float(col_data['Top 5%']) if col_data['Top 5%'] != '0' else 0
+                        feature_maps['track_top5_pct'][player_id] = self._safe_float(col_data['Top 5%'])
                     if 'FPPG' in col_data:
-                        feature_maps['track_fppg'][player_id] = float(col_data['FPPG']) if col_data['FPPG'] != '0' else 0
+                        feature_maps['track_fppg'][player_id] = self._safe_float(col_data['FPPG'])
 
                 # Extract recent form
                 elif 'last 5' in table_name or 'recent' in table_name:
                     if 'Avg Finish' in col_data:
-                        feature_maps['recent_avg_finish'][player_id] = float(col_data['Avg Finish']) if col_data['Avg Finish'] != '0' else 20
+                        feature_maps['recent_avg_finish'][player_id] = self._safe_float(col_data['Avg Finish'], 20.0)
                     if 'FPPG' in col_data:
-                        feature_maps['recent_fppg'][player_id] = float(col_data['FPPG']) if col_data['FPPG'] != '0' else 0
+                        feature_maps['recent_fppg'][player_id] = self._safe_float(col_data['FPPG'])
 
-        # Add all features to dataframe
+        # Add all features to dataframe - use None for missing data instead of 0
         for feature_name, feature_map in feature_maps.items():
-            df[feature_name] = df['player_id'].map(feature_map).fillna(0)
+            if feature_name in ['total_races', 'dnf_pct']:  # Keep these as 0 for calculations
+                df[feature_name] = df['player_id'].map(feature_map).fillna(0)
+            else:
+                df[feature_name] = df['player_id'].map(feature_map)  # Allow None values
 
         # Calculate derived metrics for NASCAR
-        # Position differential potential (key NASCAR metric)
-        df['position_differential'] = df['starting_position'] - 15  # Target: finish in top 15
-        df['pd_upside'] = np.maximum(0, df['position_differential']) * 0.5  # Bonus for advancing
+        # Position differential potential (key NASCAR metric) - only for drivers with starting position
+        df['position_differential'] = None
+        df['pd_upside'] = None
+
+        valid_pos = df['starting_position'].notna()
+        if valid_pos.any():
+            # Calculate PD for drivers starting outside top 15 (potential for advancement)
+            df.loc[valid_pos, 'position_differential'] = df.loc[valid_pos, 'starting_position'] - 15
+            df.loc[valid_pos, 'pd_upside'] = np.maximum(0, df.loc[valid_pos, 'position_differential'])
 
         # Dominator potential (drivers who lead laps and finish well)
-        df['dominator_score'] = (
-            (df['laps_led_avg'] / 10) +  # Normalize laps led
-            (1 - df['avg_finish'] / 40) * 10  # Inverse of avg finish
-        )
+        df['dominator_score'] = 0.0  # Default
 
-        # Track type detection (simplified - would need actual track data)
-        # For now, use proxy based on typical speeds/characteristics
-        track_type = 'intermediate'  # Default
-        df['track_type'] = track_type
+        # Only calculate for drivers with valid data
+        valid_laps = df['laps_led_avg'].notna() & (df['laps_led_avg'] > 0)
+        valid_finish = df['avg_finish'].notna() & (df['avg_finish'] > 0)
 
-        # Variance adjustments based on starting position
-        df['variance_multiplier'] = df.apply(
-            lambda row: 0.9 if row['starting_position'] <= 5 else  # Front runners more consistent
-                        1.2 if row['starting_position'] >= 25 else  # Back of pack more volatile
-                        1.0,  # Mid-pack standard
-            axis=1
-        )
+        if valid_laps.any() or valid_finish.any():
+            laps_component = (df['laps_led_avg'].fillna(0) / 10)  # Normalize laps led
+            finish_component = (1 - df['avg_finish'].fillna(40) / 40) * 10  # Inverse of avg finish
+            df['dominator_score'] = laps_component + finish_component
 
-        # Calculate ceiling adjustments for NASCAR
-        # Drivers starting outside top 10 have higher ceiling (position differential upside)
-        df['ceiling_adjustment'] = df.apply(
-            lambda row: 1.15 if row['starting_position'] > 15 else
-                        1.05 if row['starting_position'] > 10 else
-                        1.0,
-            axis=1
-        )
+        # Track type is already extracted from JSON data during load_raw_data
+        # No need to override here - keep the extracted value
+
+        # Variance adjustments based on starting position (only for drivers with position data)
+        df['variance_multiplier'] = 1.0  # Default
+        valid_pos = df['starting_position'].notna()
+        if valid_pos.any():
+            df.loc[valid_pos & (df['starting_position'] <= 5), 'variance_multiplier'] = 0.9   # Front runners more consistent
+            df.loc[valid_pos & (df['starting_position'] >= 25), 'variance_multiplier'] = 1.2  # Back of pack more volatile
+
+        # Calculate ceiling adjustments for NASCAR (only for drivers with position data)
+        df['ceiling_adjustment'] = 1.0  # Default
+        valid_pos = df['starting_position'].notna()
+        if valid_pos.any():
+            df.loc[valid_pos & (df['starting_position'] > 15), 'ceiling_adjustment'] = 1.15
+            df.loc[valid_pos & (df['starting_position'] > 10) & (df['starting_position'] <= 15), 'ceiling_adjustment'] = 1.05
 
         # 🛡️ SYNTHESIZED FLOOR CALCULATION (NASCAR-specific)
         # Real floors based on DNF risk, starting position, and track reliability
@@ -339,7 +365,9 @@ class NASCARDataProcessor(BaseDataProcessor):
             starting_pos = row['starting_position']
 
             # DNF risk by starting position (empirical NASCAR data)
-            if starting_pos <= 5:
+            if pd.isna(starting_pos):  # No starting position data
+                dnf_risk = 0.15  # Average DNF risk
+            elif starting_pos <= 5:
                 dnf_risk = 0.08  # Front runners: 8% DNF risk
             elif starting_pos <= 15:
                 dnf_risk = 0.12  # Mid-pack: 12% DNF risk
@@ -372,7 +400,7 @@ class NASCARDataProcessor(BaseDataProcessor):
             calculated_floor = reliability_factor * base_finish_floor
 
             # Add small bonus for drivers with track history (reduces floor risk)
-            if hasattr(row, 'bristol_fp_per_race') and row['bristol_fp_per_race'] > 35:
+            if hasattr(row, 'track_fppg') and pd.notna(row.get('track_fppg')) and row['track_fppg'] > 35:
                 calculated_floor *= 1.2  # Track specialists have higher floors
 
             # Floor can't exceed 30% of projection (prevents unrealistic floors)
@@ -382,15 +410,39 @@ class NASCARDataProcessor(BaseDataProcessor):
 
         df['synthesized_floor'] = df.apply(calculate_nascar_floor, axis=1)
 
-        # Replace the zero floors with synthesized floors
-        df['floor'] = df['synthesized_floor']
+        # Use synthesized floors only if original floor is NULL
+        df['floor'] = df['floor'].fillna(df['synthesized_floor'])
 
         print(f"   ✅ Added {len(feature_maps)} NASCAR features to {len(df)} drivers")
 
         return df
 
-    def get_position_from_data(self, _row: pd.Series) -> Position:
+    def _extract_ownership_data(self, data: Dict[str, Any]) -> Dict[str, float]:
+        """Extract ownership data from JSON with error handling."""
+        ownership_map = {}
+        try:
+            ownership_data = json.loads(data.get('OwnershipJson', '{}'))
+            for player in ownership_data.get('Players', []):
+                salary_id = player.get('SalaryId')
+                ownership = self._safe_float(player.get('Ownership', 10.0))
+                if salary_id:
+                    ownership_map[salary_id] = ownership
+        except (json.JSONDecodeError, KeyError) as e:
+            logger.warning(f"Failed to parse ownership data: {e}")
+        return ownership_map
+
+    def _safe_float(self, value: Any, default: float = 0.0) -> float:
+        """Safely convert value to float with fallback."""
+        if value in ['0', '', None]:
+            return default
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return default
+
+    def get_position_from_data(self, row: pd.Series) -> Position:
         """NASCAR drivers are all DRIVER position."""
+        # pylint: disable=unused-argument
         return Position.DRIVER
 
     def apply_projection_adjustments(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -399,29 +451,31 @@ class NASCARDataProcessor(BaseDataProcessor):
         df = super().apply_projection_adjustments(df)
 
         # Apply NASCAR-specific adjustments
-        print("   🏁 Applying NASCAR-specific adjustments...")
+        logger.info("Applying NASCAR-specific adjustments...")
 
         # 1. Position differential upside influences ceiling
         pd_boost = df['pd_upside'] > 0
-        df.loc[pd_boost, 'updated_ceiling'] *= (1 + df.loc[pd_boost, 'pd_upside'] * 0.02)
+        df.loc[pd_boost, 'updated_ceiling'] *= (1 + df.loc[pd_boost, 'pd_upside'] * NASCAR_CONFIG.PD_CEILING_MULTIPLIER)
 
         # 2. Dominator score influences projection
-        dom_boost = df['dominator_score'] > 5
-        df.loc[dom_boost, 'updated_projection'] *= (1 + (df.loc[dom_boost, 'dominator_score'] - 5) * 0.01)
+        dom_boost = df['dominator_score'] > NASCAR_CONFIG.DOMINATOR_THRESHOLD
+        df.loc[dom_boost, 'updated_projection'] *= (1 + (df.loc[dom_boost, 'dominator_score'] - NASCAR_CONFIG.DOMINATOR_THRESHOLD) * NASCAR_CONFIG.DOMINATOR_MULTIPLIER)
 
         # 3. Track history influences floor
-        track_experts = df['track_avg_finish'] < 10
-        df.loc[track_experts, 'updated_floor'] *= 1.1
+        track_experts = df['track_avg_finish'] < NASCAR_CONFIG.TRACK_EXPERT_THRESHOLD
+        df.loc[track_experts, 'updated_floor'] *= NASCAR_CONFIG.TRACK_EXPERT_FLOOR_BOOST
 
-        # 4. DNF risk influences floor negatively
-        high_dnf = df['dnf_pct'] > 15
-        df.loc[high_dnf, 'updated_floor'] *= (1 - df.loc[high_dnf, 'dnf_pct'] / 200)
+        # 4. DNF risk influences floor negatively (only for drivers with DNF data)
+        valid_dnf = df['dnf_pct'].notna() & (df['dnf_pct'] > 0)
+        high_dnf = valid_dnf & (df['dnf_pct'] > NASCAR_CONFIG.HIGH_DNF_THRESHOLD)
+        if high_dnf.any():
+            df.loc[high_dnf, 'updated_floor'] *= NASCAR_CONFIG.DNF_FLOOR_PENALTY
 
         # 5. Apply ceiling adjustments from calculate_sport_metrics
         df['updated_ceiling'] *= df['ceiling_adjustment']
 
         # Apply bounds validation after all adjustments
-        print("   🔒 Applying bounds validation...")
+        logger.debug("Applying bounds validation...")
 
         # Clamp ownership to [0, 100]
         df['updated_ownership'] = np.clip(df['updated_ownership'], 0, 100)
