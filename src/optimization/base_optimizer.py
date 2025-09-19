@@ -9,6 +9,7 @@ import pandas as pd
 
 from ..config.optimization_config import (
     CONSENSUS_CONFIG,
+    CONSTRAINTS_CONFIG,
     EFFICIENCY_CONFIG,
     FIELD_CONFIG,
     SCORING_CONFIG,
@@ -25,11 +26,11 @@ class SportConstraints:
     """Sport-specific constraints and configuration."""
     salary_cap: int
     roster_size: int
-    max_salary_remaining: int = 1500
-    min_salary_remaining: int = 300
-    max_lineup_ownership: float = 140.0
-    min_leverage_plays: int = 2
-    max_lineup_overlap: float = 0.33
+    max_salary_remaining: int = None
+    min_salary_remaining: int = None
+    max_lineup_ownership: float = None
+    min_leverage_plays: int = None
+    max_lineup_overlap: float = None
 
     # Sport-specific rules
     sport_rules: dict[str, Any] = None
@@ -37,6 +38,18 @@ class SportConstraints:
     def __post_init__(self):
         if self.sport_rules is None:
             self.sport_rules = {}
+
+        # Apply defaults from config if not provided
+        if self.max_salary_remaining is None:
+            self.max_salary_remaining = CONSTRAINTS_CONFIG.DEFAULT_MAX_SALARY_REMAINING
+        if self.min_salary_remaining is None:
+            self.min_salary_remaining = CONSTRAINTS_CONFIG.DEFAULT_MIN_SALARY_REMAINING
+        if self.max_lineup_ownership is None:
+            self.max_lineup_ownership = CONSTRAINTS_CONFIG.DEFAULT_MAX_LINEUP_OWNERSHIP
+        if self.min_leverage_plays is None:
+            self.min_leverage_plays = CONSTRAINTS_CONFIG.DEFAULT_MIN_LEVERAGE_PLAYS
+        if self.max_lineup_overlap is None:
+            self.max_lineup_overlap = CONSTRAINTS_CONFIG.DEFAULT_MAX_LINEUP_OVERLAP
 
 
 @dataclass
