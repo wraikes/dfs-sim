@@ -1,13 +1,22 @@
 """NASCAR DFS lineup optimizer using base architecture."""
 
-import numpy as np
-import pandas as pd
-from typing import List, Optional
 import random
 from dataclasses import dataclass
 
+import numpy as np
+import pandas as pd
+
+from ..config.nascar_config import (
+    NASCAR_OPTIMIZATION_CONFIG,
+    NASCAR_OWNERSHIP_CONFIG,
+    NASCAR_POSITION_CONFIG,
+    NASCAR_SCORING_CONFIG,
+    NASCAR_TRACK_RULES,
+    NASCAR_VALUE_CONFIG,
+)
+from ..config.optimization_config import FIELD_CONFIG, SCORING_CONFIG, SIMULATION_CONFIG
 from ..models.player import Player, Position
-from .base_optimizer import BaseOptimizer, SportConstraints, BaseLineup
+from .base_optimizer import BaseLineup, BaseOptimizer, SportConstraints
 from .field_generator import BaseFieldGenerator
 
 
@@ -24,16 +33,16 @@ class NASCARLineup(BaseLineup):
         super().__post_init__()
 
         # Calculate NASCAR-specific metrics
-        self.num_dominators = sum(1 for p in self.players if p.metadata.get('starting_position', 99) <= 5)
-        self.num_value_plays = sum(1 for p in self.players if p.metadata.get('starting_position', 99) > 20)
+        self.num_dominators = sum(1 for p in self.players if p.metadata.get('starting_position', 99) <= NASCAR_POSITION_CONFIG.FRONT_RUNNER_THRESHOLD)
+        self.num_value_plays = sum(1 for p in self.players if p.metadata.get('starting_position', 99) > NASCAR_POSITION_CONFIG.BACK_PACK_THRESHOLD - 3)
 
         # Manufacturer diversity
         manufacturers = set(p.metadata.get('manufacturer', 'Unknown') for p in self.players)
         self.manufacturer_diversity = len(manufacturers)
 
-        # Position differential upside (drivers starting outside top 15 have PD upside)
+        # Position differential upside (drivers starting outside target position have PD upside)
         self.position_differential_upside = sum(
-            max(0, p.metadata.get('starting_position', 15) - 15)
+            max(0, p.metadata.get('starting_position', NASCAR_POSITION_CONFIG.MID_TIER_THRESHOLD) - NASCAR_POSITION_CONFIG.MID_TIER_THRESHOLD)
             for p in self.players
         )
 
@@ -41,12 +50,12 @@ class NASCARLineup(BaseLineup):
 class NASCARFieldGenerator(BaseFieldGenerator):
     """NASCAR-specific field generator for modeling opponent lineups."""
 
-    def __init__(self, players: List[Player]):
+    def __init__(self, players: list[Player]):
         super().__init__(players)
-        self.salary_cap = 50000
-        self.roster_size = 6
+        self.salary_cap = NASCAR_OPTIMIZATION_CONFIG.SALARY_CAP
+        self.roster_size = NASCAR_OPTIMIZATION_CONFIG.ROSTER_SIZE
 
-    def _has_invalid_combinations(self, players: List[Player]) -> bool:
+    def _has_invalid_combinations(self, players: list[Player]) -> bool:
         """Check for NASCAR-specific invalid combinations (simple - no direct restrictions)."""
         # NASCAR has manufacturer/team limits but we'll keep this simple
         # Skip constraints if using placeholder data
@@ -59,18 +68,18 @@ class NASCARFieldGenerator(BaseFieldGenerator):
             # Skip check if all manufacturers are "Unknown" (placeholder data)
             if mfg != 'Unknown':
                 mfg_counts[mfg] = mfg_counts.get(mfg, 0) + 1
-                if mfg_counts[mfg] > 3:  # Very loose limit for field generation
+                if mfg_counts[mfg] > NASCAR_OPTIMIZATION_CONFIG.MAX_MANUFACTURER_COUNT + 1:  # Loose limit for field
                     return True
 
             team = player.team if player.team else 'Unknown'
             if team != 'Unknown' and team != '':
                 team_counts[team] = team_counts.get(team, 0) + 1
-                if team_counts[team] > 3:  # Very loose limit for field generation
+                if team_counts[team] > NASCAR_OPTIMIZATION_CONFIG.MAX_TEAM_COUNT + 1:  # Loose limit for field
                     return True
 
         return False
 
-    def _select_by_ownership_probability(self, available: List[Player], n: int = 1) -> List[Player]:
+    def _select_by_ownership_probability(self, available: list[Player], n: int = 1) -> list[Player]:
         """Select drivers weighted by ownership probability."""
         if not available or n <= 0:
             return []
@@ -95,7 +104,7 @@ class NASCARFieldGenerator(BaseFieldGenerator):
 
         return [available[i] for i in selected_indices]
 
-    def generate_field(self, n_lineups: int = 10000) -> List:
+    def generate_field(self, n_lineups: int = 10000) -> list:
         """Generate realistic field of NASCAR opponent lineups."""
         field = []
 
@@ -109,7 +118,7 @@ class NASCARFieldGenerator(BaseFieldGenerator):
 
         return field
 
-    def _generate_single_lineup(self) -> Optional[List[Player]]:
+    def _generate_single_lineup(self) -> list[Player] | None:
         """Generate single NASCAR lineup for field simulation."""
         max_attempts = 50
 
@@ -119,8 +128,8 @@ class NASCARFieldGenerator(BaseFieldGenerator):
             try:
                 # Simple strategy: ownership-weighted selection with position balance
 
-                # Get 1-2 dominators (P1-P12) based on ownership
-                dominators = [p for p in self.players if p.metadata.get('starting_position', 99) <= 12]
+                # Get 1-2 dominators based on ownership
+                dominators = [p for p in self.players if p.metadata.get('starting_position', 99) <= NASCAR_POSITION_CONFIG.DOMINATOR_THRESHOLD]
                 if dominators:
                     num_dominators = random.choice([1, 2])
                     selected.extend(self._select_by_ownership_probability(dominators, num_dominators))
@@ -133,9 +142,10 @@ class NASCARFieldGenerator(BaseFieldGenerator):
                         selected.extend(self._select_by_ownership_probability(remaining, remaining_slots))
 
                 # Validate basic constraints
-                if len(selected) == 6:
+                if len(selected) == NASCAR_OPTIMIZATION_CONFIG.ROSTER_SIZE:
                     total_salary = sum(p.salary for p in selected)
-                    if 48000 <= total_salary <= 50000:
+                    if (FIELD_CONFIG.MIN_SALARY_RANGE <= total_salary <=
+                        NASCAR_OPTIMIZATION_CONFIG.SALARY_CAP):
                         if not self._has_invalid_combinations(selected):
                             return selected
 
@@ -148,7 +158,7 @@ class NASCARFieldGenerator(BaseFieldGenerator):
 class NASCAROptimizer(BaseOptimizer):
     """NASCAR-specific DFS optimizer."""
 
-    def __init__(self, players: List[Player], sport: str = 'nascar', field_size: int = 10000):
+    def __init__(self, players: list[Player], sport: str = 'nascar', field_size: int = 10000):
         super().__init__(players, sport, field_size)
 
     def _get_sport_constraints(self) -> SportConstraints:
@@ -159,46 +169,33 @@ class NASCAROptimizer(BaseOptimizer):
         if is_superspeedway:
             # Superspeedway rules: more chaos, more underdogs
             return SportConstraints(
-                salary_cap=50000,
-                roster_size=6,
-                max_salary_remaining=2000,  # Can leave more on superspeedways
-                min_salary_remaining=300,
-                max_lineup_ownership=120.0,  # Lower ownership cap
-                min_leverage_plays=2,
-                max_lineup_overlap=0.4,
-                sport_rules={
-                    'track_type': 'superspeedway',
-                    'max_from_top12': 1,  # Max 1 driver from P1-P12
-                    'min_from_back': 4,  # At least 4 drivers from P23+
-                    'max_manufacturer_count': 2,
-                    'max_team_count': 2,
-                }
+                salary_cap=NASCAR_OPTIMIZATION_CONFIG.SALARY_CAP,
+                roster_size=NASCAR_OPTIMIZATION_CONFIG.ROSTER_SIZE,
+                max_salary_remaining=NASCAR_OPTIMIZATION_CONFIG.SUPERSPEEDWAY_MAX_SALARY_REMAINING,
+                min_salary_remaining=NASCAR_OPTIMIZATION_CONFIG.MIN_SALARY_REMAINING,
+                max_lineup_ownership=NASCAR_OPTIMIZATION_CONFIG.SUPERSPEEDWAY_MAX_OWNERSHIP,
+                min_leverage_plays=NASCAR_OPTIMIZATION_CONFIG.MIN_LEVERAGE_PLAYS,
+                max_lineup_overlap=NASCAR_OPTIMIZATION_CONFIG.SUPERSPEEDWAY_MAX_OVERLAP,
+                sport_rules=NASCAR_TRACK_RULES.get_superspeedway_rules()
             )
         else:
             # Non-superspeedway (intermediate/road course) rules
             return SportConstraints(
-                salary_cap=50000,
-                roster_size=6,
-                max_salary_remaining=1500,
-                min_salary_remaining=300,
-                max_lineup_ownership=135.0,
-                min_leverage_plays=2,  # At least 2 drivers ≤12% owned
-                max_lineup_overlap=0.5,
-                sport_rules={
-                    'track_type': 'intermediate',
-                    'max_dominators': 2,  # 1-2 dominators from P1-P12
-                    'min_pd_plays': 3,  # At least 3 PD drivers from P18+
-                    'max_from_top12': 2,  # Max 2 drivers from P1-P12 together
-                    'max_manufacturer_count': 2,
-                    'max_team_count': 2,
-                }
+                salary_cap=NASCAR_OPTIMIZATION_CONFIG.SALARY_CAP,
+                roster_size=NASCAR_OPTIMIZATION_CONFIG.ROSTER_SIZE,
+                max_salary_remaining=NASCAR_OPTIMIZATION_CONFIG.INTERMEDIATE_MAX_SALARY_REMAINING,
+                min_salary_remaining=NASCAR_OPTIMIZATION_CONFIG.MIN_SALARY_REMAINING,
+                max_lineup_ownership=NASCAR_OPTIMIZATION_CONFIG.INTERMEDIATE_MAX_OWNERSHIP,
+                min_leverage_plays=NASCAR_OPTIMIZATION_CONFIG.MIN_LEVERAGE_PLAYS,
+                max_lineup_overlap=NASCAR_OPTIMIZATION_CONFIG.INTERMEDIATE_MAX_OVERLAP,
+                sport_rules=NASCAR_TRACK_RULES.get_intermediate_rules()
             )
 
     def _create_field_generator(self) -> BaseFieldGenerator:
         """Create NASCAR field generator."""
         return NASCARFieldGenerator(self.players)
 
-    def _validate_lineup(self, players: List[Player]) -> bool:
+    def _validate_lineup(self, players: list[Player]) -> bool:
         """Validate NASCAR lineup meets sport-specific rules."""
         if len(players) != 6:
             return False
@@ -218,14 +215,14 @@ class NASCAROptimizer(BaseOptimizer):
             # Skip manufacturer constraint if all are "Unknown" (placeholder data)
             if mfg != 'Unknown':
                 manufacturer_counts[mfg] = manufacturer_counts.get(mfg, 0) + 1
-                if manufacturer_counts[mfg] > self.constraints.sport_rules.get('max_manufacturer_count', 2):
+                if manufacturer_counts[mfg] > NASCAR_OPTIMIZATION_CONFIG.MAX_MANUFACTURER_COUNT:
                     return False
 
             # Also check team counts (skip if data unavailable)
             team = player.team if player.team else 'Unknown'
             if team != 'Unknown' and team != '':
                 team_counts[team] = team_counts.get(team, 0) + 1
-                if team_counts[team] > self.constraints.sport_rules.get('max_team_count', 2):
+                if team_counts[team] > NASCAR_OPTIMIZATION_CONFIG.MAX_TEAM_COUNT:
                     return False
 
         # Get starting positions
@@ -237,25 +234,25 @@ class NASCAROptimizer(BaseOptimizer):
         if track_type == 'superspeedway':
             # Superspeedway rules
             # Max 1 driver from P1-P12
-            top12_count = sum(1 for pos in starting_positions if pos <= 12)
-            if top12_count > self.constraints.sport_rules.get('max_from_top12', 1):
+            top12_count = sum(1 for pos in starting_positions if pos <= NASCAR_POSITION_CONFIG.DOMINATOR_THRESHOLD)
+            if top12_count > NASCAR_POSITION_CONFIG.SUPERSPEEDWAY_MAX_FROM_TOP12:
                 return False
 
             # At least 4 drivers from P23+
-            back_count = sum(1 for pos in starting_positions if pos >= 23)
-            if back_count < self.constraints.sport_rules.get('min_from_back', 4):
+            back_count = sum(1 for pos in starting_positions if pos >= NASCAR_POSITION_CONFIG.BACK_PACK_THRESHOLD)
+            if back_count < NASCAR_POSITION_CONFIG.SUPERSPEEDWAY_MIN_FROM_BACK:
                 return False
 
         else:
             # Non-superspeedway rules
             # Max 2 drivers from P1-P12
-            top12_count = sum(1 for pos in starting_positions if pos <= 12)
-            if top12_count > self.constraints.sport_rules.get('max_from_top12', 2):
+            top12_count = sum(1 for pos in starting_positions if pos <= NASCAR_POSITION_CONFIG.DOMINATOR_THRESHOLD)
+            if top12_count > NASCAR_POSITION_CONFIG.INTERMEDIATE_MAX_FROM_TOP12:
                 return False
 
             # At least 3 PD drivers from P18+
-            pd_plays = sum(1 for pos in starting_positions if pos >= 18)
-            if pd_plays < self.constraints.sport_rules.get('min_pd_plays', 3):
+            pd_plays = sum(1 for pos in starting_positions if pos >= NASCAR_POSITION_CONFIG.PD_THRESHOLD)
+            if pd_plays < NASCAR_POSITION_CONFIG.INTERMEDIATE_MIN_PD_PLAYS:
                 return False
 
         # Check ownership constraints
@@ -265,18 +262,18 @@ class NASCAROptimizer(BaseOptimizer):
 
         # Check leverage plays requirement
         # NASCAR rule: At least 2 drivers ≤12% owned
-        low_owned = sum(1 for p in players if p.ownership <= 12)
-        if low_owned < self.constraints.min_leverage_plays:
+        low_owned = sum(1 for p in players if p.ownership <= NASCAR_OWNERSHIP_CONFIG.LEVERAGE_THRESHOLD)
+        if low_owned < NASCAR_OPTIMIZATION_CONFIG.MIN_LEVERAGE_PLAYS:
             return False
 
         # Max 3 drivers ≥25% owned
-        high_owned = sum(1 for p in players if p.ownership >= 25)
-        if high_owned > 3:
+        high_owned = sum(1 for p in players if p.ownership >= NASCAR_OWNERSHIP_CONFIG.HIGH_OWNERSHIP_THRESHOLD)
+        if high_owned > NASCAR_OWNERSHIP_CONFIG.MAX_HIGH_OWNED:
             return False
 
         return True
 
-    def _create_lineup(self, players: List[Player]) -> BaseLineup:
+    def _create_lineup(self, players: list[Player]) -> BaseLineup:
         """Create NASCAR lineup object."""
         return NASCARLineup(players=players)
 
@@ -320,10 +317,10 @@ class NASCAROptimizer(BaseOptimizer):
 
         return player
 
-    def _generate_single_lineup(self) -> Optional[BaseLineup]:
+    def _generate_single_lineup(self) -> BaseLineup | None:
         """Generate a single NASCAR lineup candidate based on track type."""
         attempts = 0
-        max_attempts = 100
+        max_attempts = SIMULATION_CONFIG.MAX_ATTEMPTS
 
         # Detect track type
         track_type = self.constraints.sport_rules.get('track_type', 'intermediate')
@@ -335,12 +332,12 @@ class NASCAROptimizer(BaseOptimizer):
             try:
                 if track_type == 'superspeedway':
                     # Superspeedway strategy: chaos lineup with mostly back-of-pack drivers
-                    front_runners = [p for p in self.players if p.metadata.get('starting_position', 99) <= 12]
-                    mid_pack = [p for p in self.players if 13 <= p.metadata.get('starting_position', 99) <= 22]
-                    back_pack = [p for p in self.players if p.metadata.get('starting_position', 99) >= 23]
+                    front_runners = [p for p in self.players if p.metadata.get('starting_position', 99) <= NASCAR_POSITION_CONFIG.DOMINATOR_THRESHOLD]
+                    mid_pack = [p for p in self.players if (NASCAR_POSITION_CONFIG.DOMINATOR_THRESHOLD + 1) <= p.metadata.get('starting_position', 99) <= (NASCAR_POSITION_CONFIG.BACK_PACK_THRESHOLD - 1)]
+                    back_pack = [p for p in self.players if p.metadata.get('starting_position', 99) >= NASCAR_POSITION_CONFIG.BACK_PACK_THRESHOLD]
 
                     # Max 1 from P1-P12
-                    if front_runners and random.random() < 0.7:  # 70% chance to include 1 front runner
+                    if front_runners and random.random() < NASCAR_VALUE_CONFIG.DOMINATOR_SELECTION_PROBABILITY:
                         selected.append(random.choice(front_runners))
 
                     # 1-2 from mid-pack
@@ -349,7 +346,7 @@ class NASCAROptimizer(BaseOptimizer):
                         selected.extend(random.sample(mid_pack, min(num_mid, len(mid_pack))))
 
                     # Fill rest with back-of-pack (need at least 4 from P23+)
-                    remaining_slots = 6 - len(selected)
+                    remaining_slots = NASCAR_OPTIMIZATION_CONFIG.ROSTER_SIZE - len(selected)
                     if back_pack and remaining_slots > 0:
                         # Prioritize low-owned back markers
                         back_sorted = sorted(back_pack, key=lambda x: x.ownership)
@@ -357,9 +354,9 @@ class NASCAROptimizer(BaseOptimizer):
 
                 else:
                     # Non-superspeedway strategy: balanced with dominators and PD plays
-                    dominators = [p for p in self.players if p.metadata.get('starting_position', 99) <= 12]
-                    mid_tier = [p for p in self.players if 13 <= p.metadata.get('starting_position', 99) <= 17]
-                    pd_plays = [p for p in self.players if p.metadata.get('starting_position', 99) >= 18]
+                    dominators = [p for p in self.players if p.metadata.get('starting_position', 99) <= NASCAR_POSITION_CONFIG.DOMINATOR_THRESHOLD]
+                    mid_tier = [p for p in self.players if (NASCAR_POSITION_CONFIG.DOMINATOR_THRESHOLD + 1) <= p.metadata.get('starting_position', 99) <= NASCAR_POSITION_CONFIG.MID_TIER_THRESHOLD]
+                    pd_plays = [p for p in self.players if p.metadata.get('starting_position', 99) >= NASCAR_POSITION_CONFIG.PD_THRESHOLD]
 
                     # 1-2 dominators from P1-P12, prioritizing dominator score + ownership leverage
                     num_dominators = random.choice([1, 2])
@@ -369,10 +366,10 @@ class NASCAROptimizer(BaseOptimizer):
                         dom_sorted = sorted(dominators, key=lambda x: (-x.metadata.get('dominator_score', 0), x.ownership))
 
                         # Select from top dominator candidates with some randomization for diversity
-                        if random.random() < 0.7:  # 70% chance for pure dominator score selection
-                            top_dominators = dom_sorted[:min(6, len(dom_sorted))]  # Top 6 dominator candidates
-                        else:  # 30% chance for ownership-first selection (more contrarian)
-                            top_dominators = sorted(dominators, key=lambda x: (x.ownership, -x.metadata.get('dominator_score', 0)))[:6]
+                        if random.random() < NASCAR_VALUE_CONFIG.DOMINATOR_SELECTION_PROBABILITY:
+                            top_dominators = dom_sorted[:min(NASCAR_VALUE_CONFIG.MAX_DOMINATOR_CANDIDATES, len(dom_sorted))]
+                        else:  # Ownership-first selection (more contrarian)
+                            top_dominators = sorted(dominators, key=lambda x: (x.ownership, -x.metadata.get('dominator_score', 0)))[:NASCAR_VALUE_CONFIG.MAX_DOMINATOR_CANDIDATES]
 
                         selected.extend(random.sample(top_dominators, min(num_dominators, len(top_dominators))))
 
@@ -382,7 +379,7 @@ class NASCAROptimizer(BaseOptimizer):
                         selected.extend(random.sample(mid_tier, min(num_mid, len(mid_tier))))
 
                     # Fill rest with PD plays (need at least 3 from P18+) - prioritize VALUE-ADJUSTED leverage
-                    remaining_slots = 6 - len(selected)
+                    remaining_slots = NASCAR_OPTIMIZATION_CONFIG.ROSTER_SIZE - len(selected)
                     if pd_plays and remaining_slots > 0:
                         # Calculate value-adjusted scores for PD plays (same logic as in scoring)
                         pd_with_values = []
@@ -394,14 +391,14 @@ class NASCAROptimizer(BaseOptimizer):
 
                             # Combined value score (normalize to 0-1 range roughly)
                             value_score = (
-                                min(pts_per_dollar / 5.0, 1.0) * 0.4 +  # Efficiency
-                                min(ceiling_upside / 2.0, 1.0) * 0.3 +   # Upside potential
-                                min(dominator_value / 15.0, 1.0) * 0.3   # Sport-specific value
+                                min(pts_per_dollar / 5.0, 1.0) * NASCAR_VALUE_CONFIG.EFFICIENCY_WEIGHT +
+                                min(ceiling_upside / 2.0, 1.0) * NASCAR_VALUE_CONFIG.UPSIDE_WEIGHT +
+                                min(dominator_value / NASCAR_SCORING_CONFIG.MAX_DOMINATOR_SCORE, 1.0) * NASCAR_VALUE_CONFIG.DOMINATOR_WEIGHT
                             )
 
-                            # Only consider if good value (0.4+ score)
-                            if value_score >= 0.4:
-                                leverage_score = max(0, 50 - player.ownership) / 50 * value_score
+                            # Only consider if good value
+                            if value_score >= SCORING_CONFIG.VALUE_THRESHOLD:
+                                leverage_score = max(0, SCORING_CONFIG.OWNERSHIP_REFERENCE - player.ownership) / SCORING_CONFIG.OWNERSHIP_REFERENCE * value_score
                                 pd_with_values.append((player, leverage_score))
 
                         # Sort by leverage score (value-adjusted ownership)
@@ -409,24 +406,24 @@ class NASCAROptimizer(BaseOptimizer):
 
                         # Strategy: Mix high-upside with some randomization for diversity
                         if remaining_slots >= 2 and len(pd_sorted) >= 2:
-                            # 80% chance to take the best PD upside play
-                            if random.random() < 0.8:
+                            # High chance to take the best PD upside play
+                            if random.random() < NASCAR_VALUE_CONFIG.BEST_PD_SELECTION_PROBABILITY:
                                 selected.append(pd_sorted[0])  # Best PD upside play
                                 remaining_slots -= 1
 
                             # Select from expanded PD candidates for diversity
-                            pd_candidates = pd_sorted[:min(12, len(pd_sorted))]  # Top 12 PD plays
+                            pd_candidates = pd_sorted[:min(NASCAR_VALUE_CONFIG.MAX_PD_CANDIDATES, len(pd_sorted))]
                             remaining_needed = min(remaining_slots, len([p for p in pd_candidates if p not in selected]))
                             if remaining_needed > 0:
                                 available_pd = [p for p in pd_candidates if p not in selected]
                                 selected.extend(random.sample(available_pd, remaining_needed))
                         else:
                             # Select from expanded PD upside candidates for more diversity
-                            top_pd = pd_sorted[:min(10, len(pd_sorted))]
+                            top_pd = pd_sorted[:min(NASCAR_VALUE_CONFIG.MAX_PD_EXPANDED, len(pd_sorted))]
                             selected.extend(random.sample(top_pd, min(remaining_slots, len(top_pd))))
 
                 # Fill to 6 drivers if needed
-                while len(selected) < 6:
+                while len(selected) < NASCAR_OPTIMIZATION_CONFIG.ROSTER_SIZE:
                     remaining = [p for p in self.players if p not in selected]
                     if remaining:
                         # Prefer low-owned drivers with good value
@@ -435,7 +432,7 @@ class NASCAROptimizer(BaseOptimizer):
                     else:
                         break
 
-                if len(selected) == 6:
+                if len(selected) == NASCAR_OPTIMIZATION_CONFIG.ROSTER_SIZE:
                     lineup = self._create_lineup(selected)
                     if self._validate_lineup(selected):
                         return lineup
@@ -469,16 +466,16 @@ class NASCAROptimizer(BaseOptimizer):
 
             # Normalize metrics to 0-1 scale
             metrics = {}
-            metrics['dominator'] = min(dominator_score / 15.0, 1.0)
-            metrics['pd_potential'] = min(pd_upside / 10.0, 1.0)
+            metrics['dominator'] = min(dominator_score / NASCAR_SCORING_CONFIG.MAX_DOMINATOR_SCORE, 1.0)
+            metrics['pd_potential'] = min(pd_upside / NASCAR_SCORING_CONFIG.MAX_PD_UPSIDE, 1.0)
 
             # Position-based value (front runners vs back markers)
-            if starting_pos <= 12:
-                metrics['position_value'] = 0.8  # Front runners have high value
-            elif starting_pos >= 25:
-                metrics['position_value'] = 0.7  # Back markers have PD value
+            if starting_pos <= NASCAR_POSITION_CONFIG.DOMINATOR_THRESHOLD:
+                metrics['position_value'] = NASCAR_VALUE_CONFIG.FRONT_RUNNER_VALUE
+            elif starting_pos >= NASCAR_POSITION_CONFIG.BACK_PACK_THRESHOLD + 2:
+                metrics['position_value'] = NASCAR_VALUE_CONFIG.BACK_MARKER_VALUE
             else:
-                metrics['position_value'] = 0.5  # Mid-pack moderate value
+                metrics['position_value'] = NASCAR_VALUE_CONFIG.MID_PACK_VALUE
 
             return metrics
 
@@ -490,51 +487,48 @@ class NASCAROptimizer(BaseOptimizer):
         for player in lineup.players:
             starting_pos = player.metadata.get('starting_position', 20)
 
-            # Count dominators (P1-P12)
-            if starting_pos <= 12:
+            # Count dominators
+            if starting_pos <= NASCAR_POSITION_CONFIG.DOMINATOR_THRESHOLD:
                 dominators += 1
 
-            # PD play bonus (P18+)
-            if starting_pos >= 18:
-                pd_bonus += 5  # Flat bonus for each PD driver
-            if starting_pos >= 25:  # Deep PD play
-                pd_bonus += 3  # Extra bonus for extreme PD
+            # PD play bonus
+            if starting_pos >= NASCAR_POSITION_CONFIG.PD_THRESHOLD:
+                pd_bonus += NASCAR_SCORING_CONFIG.PD_PLAY_BONUS
+            if starting_pos >= NASCAR_POSITION_CONFIG.BACK_PACK_THRESHOLD + 2:  # Deep PD play
+                pd_bonus += NASCAR_SCORING_CONFIG.DEEP_PD_BONUS
 
         # Dominator balance based on track type rules
         track_type = self.constraints.sport_rules.get('track_type', 'intermediate')
         dominator_bonus = 0
 
         if track_type == 'superspeedway':
-            max_from_top12 = self.constraints.sport_rules.get('max_from_top12', 1)
-            if dominators <= max_from_top12:
-                dominator_bonus = 10  # Reward staying within superspeedway limits
+            if dominators <= NASCAR_POSITION_CONFIG.SUPERSPEEDWAY_MAX_FROM_TOP12:
+                dominator_bonus = NASCAR_SCORING_CONFIG.SUPERSPEEDWAY_DOMINATOR_BONUS
             else:
-                dominator_bonus = -15  # Penalty for violating superspeedway rules
+                dominator_bonus = NASCAR_SCORING_CONFIG.DOMINATOR_VIOLATION_PENALTY
         else:
-            max_dominators = self.constraints.sport_rules.get('max_dominators', 2)
-            if dominators <= max_dominators:
-                dominator_bonus = 8 if dominators == 1 else 5  # Prefer 1 but allow 2
+            if dominators <= NASCAR_POSITION_CONFIG.INTERMEDIATE_MAX_DOMINATORS:
+                dominator_bonus = (NASCAR_SCORING_CONFIG.INTERMEDIATE_DOMINATOR_BONUS_SINGLE if dominators == 1
+                                 else NASCAR_SCORING_CONFIG.INTERMEDIATE_DOMINATOR_BONUS_DOUBLE)
             else:
-                dominator_bonus = -10  # Penalty for too many dominators
+                dominator_bonus = NASCAR_SCORING_CONFIG.INTERMEDIATE_DOMINATOR_PENALTY
 
         # Track-specific bonuses using sport rules
         track_bonus = 0
         if track_type == 'superspeedway':
             # Reward chaos lineups meeting min_from_back requirement
-            min_from_back = self.constraints.sport_rules.get('min_from_back', 4)
-            back_count = sum(1 for p in lineup.players if p.metadata.get('starting_position', 20) >= 23)
-            if back_count >= min_from_back:
-                track_bonus += 15  # Big bonus for meeting chaos requirements
+            back_count = sum(1 for p in lineup.players if p.metadata.get('starting_position', 20) >= NASCAR_POSITION_CONFIG.BACK_PACK_THRESHOLD)
+            if back_count >= NASCAR_POSITION_CONFIG.SUPERSPEEDWAY_MIN_FROM_BACK:
+                track_bonus += NASCAR_SCORING_CONFIG.SUPERSPEEDWAY_CHAOS_BONUS
         else:
             # Reward balanced approach meeting min_pd_plays
-            min_pd_plays = self.constraints.sport_rules.get('min_pd_plays', 3)
-            pd_count = sum(1 for p in lineup.players if p.metadata.get('starting_position', 20) >= 18)
-            if pd_count >= min_pd_plays:
-                track_bonus += 10  # Bonus for meeting PD requirements
+            pd_count = sum(1 for p in lineup.players if p.metadata.get('starting_position', 20) >= NASCAR_POSITION_CONFIG.PD_THRESHOLD)
+            if pd_count >= NASCAR_POSITION_CONFIG.INTERMEDIATE_MIN_PD_PLAYS:
+                track_bonus += NASCAR_SCORING_CONFIG.INTERMEDIATE_BALANCE_BONUS
 
-        # Manufacturer/team diversity using sport rules limits
-        max_mfg_count = self.constraints.sport_rules.get('max_manufacturer_count', 2)
-        max_team_count = self.constraints.sport_rules.get('max_team_count', 2)
+        # Manufacturer/team diversity using config limits
+        max_mfg_count = NASCAR_OPTIMIZATION_CONFIG.MAX_MANUFACTURER_COUNT
+        max_team_count = NASCAR_OPTIMIZATION_CONFIG.MAX_TEAM_COUNT
 
         mfg_counts = {}
         team_counts = {}
@@ -548,17 +542,17 @@ class NASCAROptimizer(BaseOptimizer):
         concentration_penalty = 0
         for count in mfg_counts.values():
             if count > max_mfg_count:
-                concentration_penalty -= 10  # Penalty for violating manufacturer limits
+                concentration_penalty -= NASCAR_SCORING_CONFIG.MANUFACTURER_VIOLATION_PENALTY
 
         for count in team_counts.values():
             if count > max_team_count:
-                concentration_penalty -= 8  # Penalty for violating team limits
+                concentration_penalty -= NASCAR_SCORING_CONFIG.TEAM_VIOLATION_PENALTY
 
         return base_score + ownership_leverage + pd_bonus + dominator_bonus + track_bonus + concentration_penalty
 
     def _display_lineup_players(self, lineup: BaseLineup):
         """Display NASCAR lineup players."""
-        print(f"\n🏁 Drivers:")
+        print("\n🏁 Drivers:")
         for player in lineup.players:
             signal = player.metadata.get('newsletter_signal', 'neutral')
             signal_icon = {'target': '🎯', 'avoid': '⛔', 'volatile': '⚡'}.get(signal, '  ')
@@ -567,11 +561,11 @@ class NASCAROptimizer(BaseOptimizer):
             win_odds = player.metadata.get('win_odds', 0)
 
             # Position category
-            if starting_pos <= 5:
+            if starting_pos <= NASCAR_POSITION_CONFIG.FRONT_RUNNER_THRESHOLD:
                 pos_category = "DOM"
-            elif starting_pos <= 12:
+            elif starting_pos <= NASCAR_POSITION_CONFIG.DOMINATOR_THRESHOLD:
                 pos_category = "MID"
-            elif starting_pos >= 18:
+            elif starting_pos >= NASCAR_POSITION_CONFIG.PD_THRESHOLD:
                 pos_category = "PD "
             else:
                 pos_category = "   "

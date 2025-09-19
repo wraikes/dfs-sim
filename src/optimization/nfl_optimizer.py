@@ -1,14 +1,15 @@
 """NFL DFS lineup optimizer with stacking logic and position constraints."""
 
+import random
+from collections import defaultdict
+from dataclasses import dataclass
+from typing import Optional
+
 import numpy as np
 import pandas as pd
-from typing import List, Optional, Dict, Tuple
-import random
-from dataclasses import dataclass
-from collections import defaultdict
 
 from ..models.player import Player, Position
-from .base_optimizer import BaseOptimizer, SportConstraints, BaseLineup
+from .base_optimizer import BaseLineup, BaseOptimizer, SportConstraints
 from .field_generator import BaseFieldGenerator
 
 
@@ -16,15 +17,15 @@ from .field_generator import BaseFieldGenerator
 class NFLLineup(BaseLineup):
     """NFL-specific lineup with stacking analysis."""
     # NFL roster constraints: QB, RB, RB, WR, WR, WR, TE, FLEX, DST
-    qb: Optional[Player] = None
-    rb1: Optional[Player] = None
-    rb2: Optional[Player] = None
-    wr1: Optional[Player] = None
-    wr2: Optional[Player] = None
-    wr3: Optional[Player] = None
-    te: Optional[Player] = None
-    flex: Optional[Player] = None  # RB/WR/TE
-    dst: Optional[Player] = None
+    qb: Player | None = None
+    rb1: Player | None = None
+    rb2: Player | None = None
+    wr1: Player | None = None
+    wr2: Player | None = None
+    wr3: Player | None = None
+    te: Player | None = None
+    flex: Player | None = None  # RB/WR/TE
+    dst: Player | None = None
 
     # Stacking metrics
     primary_stack_size: int = 0      # QB + pass catchers from same team
@@ -115,18 +116,18 @@ class NFLLineup(BaseLineup):
 class NFLFieldGenerator(BaseFieldGenerator):
     """Generate opponent field for NFL contests."""
 
-    def __init__(self, players: List[Player]):
+    def __init__(self, players: list[Player]):
         super().__init__(players)
         self.players_by_position = self._group_players_by_position()
 
-    def _group_players_by_position(self) -> Dict[Position, List[Player]]:
+    def _group_players_by_position(self) -> dict[Position, list[Player]]:
         """Group players by position for efficient sampling."""
         groups = defaultdict(list)
         for player in self.players:
             groups[player.position].append(player)
         return groups
 
-    def generate_field(self, field_size: int) -> List['NFLLineup']:
+    def generate_field(self, field_size: int) -> list['NFLLineup']:
         """Generate field of opponent lineups."""
         print(f"Generating field of {field_size:,} lineups...")
 
@@ -177,7 +178,7 @@ class NFLFieldGenerator(BaseFieldGenerator):
         except (IndexError, ValueError):
             return None
 
-    def _sample_by_ownership(self, players: List[Player], count: int) -> List[Player]:
+    def _sample_by_ownership(self, players: list[Player], count: int) -> list[Player]:
         """Sample players weighted by ownership percentage."""
         if not players or count <= 0:
             return []
@@ -197,7 +198,7 @@ class NFLFieldGenerator(BaseFieldGenerator):
             # Fallback to random sampling
             return random.sample(players, min(count, len(players)))
 
-    def _select_by_ownership_probability(self, players: List[Player], count: int) -> List[Player]:
+    def _select_by_ownership_probability(self, players: list[Player], count: int) -> list[Player]:
         """Select players by ownership probability (required by base class)."""
         return self._sample_by_ownership(players, count)
 
@@ -214,7 +215,7 @@ class NFLFieldGenerator(BaseFieldGenerator):
 class NFLOptimizer(BaseOptimizer):
     """NFL-specific DFS optimizer with stacking logic."""
 
-    def __init__(self, players: List[Player], sport: str = 'nfl', field_size: int = 10000):
+    def __init__(self, players: list[Player], sport: str = 'nfl', field_size: int = 10000):
         super().__init__(players, sport, field_size)
 
     def _get_sport_constraints(self) -> SportConstraints:
@@ -240,7 +241,7 @@ class NFLOptimizer(BaseOptimizer):
         """Create NFL-specific field generator."""
         return NFLFieldGenerator(self.players)
 
-    def _validate_lineup(self, players: List[Player]) -> bool:
+    def _validate_lineup(self, players: list[Player]) -> bool:
         """Validate NFL lineup meets position and stacking constraints."""
         if len(players) != 9:
             return False
@@ -304,11 +305,11 @@ class NFLOptimizer(BaseOptimizer):
 
         return True
 
-    def _create_lineup(self, players: List[Player]) -> BaseLineup:
+    def _create_lineup(self, players: list[Player]) -> BaseLineup:
         """Create NFL-specific lineup object."""
         return NFLLineup(players=players)
 
-    def _generate_single_lineup(self) -> Optional[BaseLineup]:
+    def _generate_single_lineup(self) -> BaseLineup | None:
         """Generate a single candidate NFL lineup with stacking logic."""
         max_attempts = 100
 
@@ -412,7 +413,7 @@ class NFLOptimizer(BaseOptimizer):
 
         return None
 
-    def _get_remaining_positions(self, selected_positions: List[Position]) -> List[Position]:
+    def _get_remaining_positions(self, selected_positions: list[Position]) -> list[Position]:
         """Determine remaining positions needed to complete NFL lineup."""
         required = [
             Position.QB,  # 1
@@ -526,7 +527,7 @@ class NFLOptimizer(BaseOptimizer):
         if not isinstance(lineup, NFLLineup):
             return
 
-        print(f"\n🏈 NFL LINEUP:")
+        print("\n🏈 NFL LINEUP:")
 
         # Display by position with stacking indicators
         positions = [
@@ -555,7 +556,7 @@ class NFLOptimizer(BaseOptimizer):
 
         # Display stacking summary
         if lineup.primary_stack_size > 1:
-            print(f"\n📊 STACK ANALYSIS:")
+            print("\n📊 STACK ANALYSIS:")
             print(f"   Primary Stack: {lineup.primary_stack_size} players ({lineup.qb.team})")
             print(f"   Total Targets: {lineup.total_target_share:.1f}/game")
             if lineup.bring_back_stack:
