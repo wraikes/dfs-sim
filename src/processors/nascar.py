@@ -261,8 +261,8 @@ class NASCARDataProcessor(BaseDataProcessor):
                             expected_fppg = max(0, 50 - avg_finish * 1.2)  # Linear relationship
                             if expected_fppg > 0:
                                 fppg_deficit = max(0, expected_fppg - fppg) / expected_fppg
-                                # Convert deficit to estimated DNF rate (capped at 30%)
-                                estimated_dnf = min(30, fppg_deficit * 25)
+                                # Convert deficit to estimated DNF rate (capped by config)
+                                estimated_dnf = min(NASCAR_CONFIG.MAX_DNF_ESTIMATE, fppg_deficit * NASCAR_CONFIG.DNF_CALCULATION_MULTIPLIER)
                                 feature_maps['dnf_pct'][player_id] = estimated_dnf
 
                     # Advanced season stats for correlation/variance modeling
@@ -325,8 +325,8 @@ class NASCARDataProcessor(BaseDataProcessor):
 
         valid_pos = df['starting_position'].notna()
         if valid_pos.any():
-            # Calculate PD for drivers starting outside top 15 (potential for advancement)
-            df.loc[valid_pos, 'position_differential'] = df.loc[valid_pos, 'starting_position'] - 15
+            # Calculate PD for drivers starting outside target position (potential for advancement)
+            df.loc[valid_pos, 'position_differential'] = df.loc[valid_pos, 'starting_position'] - NASCAR_CONFIG.PD_TARGET_POSITION
             df.loc[valid_pos, 'pd_upside'] = np.maximum(0, df.loc[valid_pos, 'position_differential'])
 
         # Dominator potential (drivers who lead laps and finish well)
@@ -348,15 +348,15 @@ class NASCARDataProcessor(BaseDataProcessor):
         df['variance_multiplier'] = 1.0  # Default
         valid_pos = df['starting_position'].notna()
         if valid_pos.any():
-            df.loc[valid_pos & (df['starting_position'] <= 5), 'variance_multiplier'] = 0.9   # Front runners more consistent
-            df.loc[valid_pos & (df['starting_position'] >= 25), 'variance_multiplier'] = 1.2  # Back of pack more volatile
+            df.loc[valid_pos & (df['starting_position'] <= NASCAR_CONFIG.FRONT_RUNNER_THRESHOLD), 'variance_multiplier'] = NASCAR_CONFIG.FRONT_RUNNER_VARIANCE
+            df.loc[valid_pos & (df['starting_position'] >= NASCAR_CONFIG.BACK_MID_THRESHOLD), 'variance_multiplier'] = NASCAR_CONFIG.BACK_PACK_VARIANCE
 
         # Calculate ceiling adjustments for NASCAR (only for drivers with position data)
         df['ceiling_adjustment'] = 1.0  # Default
         valid_pos = df['starting_position'].notna()
         if valid_pos.any():
-            df.loc[valid_pos & (df['starting_position'] > 15), 'ceiling_adjustment'] = 1.15
-            df.loc[valid_pos & (df['starting_position'] > 10) & (df['starting_position'] <= 15), 'ceiling_adjustment'] = 1.05
+            df.loc[valid_pos & (df['starting_position'] > NASCAR_CONFIG.MID_PACK_THRESHOLD), 'ceiling_adjustment'] = NASCAR_CONFIG.BACK_CEILING_BOOST
+            df.loc[valid_pos & (df['starting_position'] > 10) & (df['starting_position'] <= NASCAR_CONFIG.MID_PACK_THRESHOLD), 'ceiling_adjustment'] = NASCAR_CONFIG.MID_CEILING_BOOST
 
         # 🛡️ SYNTHESIZED FLOOR CALCULATION (NASCAR-specific)
         # Real floors based on DNF risk, starting position, and track reliability
@@ -366,52 +366,44 @@ class NASCARDataProcessor(BaseDataProcessor):
 
             # DNF risk by starting position (empirical NASCAR data)
             if pd.isna(starting_pos):  # No starting position data
-                dnf_risk = 0.15  # Average DNF risk
-            elif starting_pos <= 5:
-                dnf_risk = 0.08  # Front runners: 8% DNF risk
-            elif starting_pos <= 15:
-                dnf_risk = 0.12  # Mid-pack: 12% DNF risk
-            elif starting_pos <= 25:
-                dnf_risk = 0.18  # Back-mid: 18% DNF risk
+                dnf_risk = NASCAR_CONFIG.DNF_NO_POSITION
+            elif starting_pos <= NASCAR_CONFIG.FRONT_RUNNER_THRESHOLD:
+                dnf_risk = NASCAR_CONFIG.DNF_FRONT_RUNNERS
+            elif starting_pos <= NASCAR_CONFIG.MID_PACK_THRESHOLD:
+                dnf_risk = NASCAR_CONFIG.DNF_MID_PACK
+            elif starting_pos <= NASCAR_CONFIG.BACK_MID_THRESHOLD:
+                dnf_risk = NASCAR_CONFIG.DNF_BACK_MID
             else:
-                dnf_risk = 0.25  # Back-pack: 25% DNF risk (equipment/lapped)
-
-            # Track-specific adjustments (Bristol is relatively safe)
-            track_safety_factor = 0.85  # Bristol has fewer multi-car crashes
-            adjusted_dnf_risk = dnf_risk * track_safety_factor
+                dnf_risk = NASCAR_CONFIG.DNF_BACK_PACK
 
             # More realistic NASCAR floor calculation
             # Base floor from finish position points (42 pts for 1st down to 4 pts for 39th)
-            if starting_pos <= 5:
-                # Front runners: Even with issues, likely 15th-25th finish
-                base_finish_floor = 25  # 15-20 pts from finish + some laps/fastest laps
-            elif starting_pos <= 15:
-                # Mid-pack: Issues likely mean 25th-35th finish
-                base_finish_floor = 15  # 8-15 pts from finish
-            elif starting_pos <= 25:
-                # Back-mid: Issues mean 30th+ finish
-                base_finish_floor = 8   # 4-12 pts from finish
+            if pd.isna(starting_pos) or starting_pos <= NASCAR_CONFIG.FRONT_RUNNER_THRESHOLD:
+                base_finish_floor = NASCAR_CONFIG.FRONT_RUNNER_FLOOR
+            elif starting_pos <= NASCAR_CONFIG.MID_PACK_THRESHOLD:
+                base_finish_floor = NASCAR_CONFIG.MID_PACK_FLOOR
+            elif starting_pos <= NASCAR_CONFIG.BACK_MID_THRESHOLD:
+                base_finish_floor = NASCAR_CONFIG.BACK_MID_FLOOR
             else:
-                # Back-pack: High risk of being lapped/DNF
-                base_finish_floor = 3   # Minimum points if they finish
+                base_finish_floor = NASCAR_CONFIG.BACK_PACK_FLOOR
 
             # Apply DNF risk
-            reliability_factor = 1 - adjusted_dnf_risk
+            reliability_factor = 1 - dnf_risk
             calculated_floor = reliability_factor * base_finish_floor
 
             # Add small bonus for drivers with track history (reduces floor risk)
-            if hasattr(row, 'track_fppg') and pd.notna(row.get('track_fppg')) and row['track_fppg'] > 35:
-                calculated_floor *= 1.2  # Track specialists have higher floors
+            if hasattr(row, 'track_fppg') and pd.notna(row.get('track_fppg')) and row['track_fppg'] > NASCAR_CONFIG.TRACK_FPPG_THRESHOLD:
+                calculated_floor *= NASCAR_CONFIG.TRACK_EXPERT_FLOOR_BOOST
 
-            # Floor can't exceed 30% of projection (prevents unrealistic floors)
-            max_floor = base_projection * 0.30
+            # Floor can't exceed configured ratio of projection (prevents unrealistic floors)
+            max_floor = base_projection * NASCAR_CONFIG.MAX_FLOOR_RATIO
 
             return min(calculated_floor, max_floor)
 
         df['synthesized_floor'] = df.apply(calculate_nascar_floor, axis=1)
 
-        # Use synthesized floors only if original floor is NULL
-        df['floor'] = df['floor'].fillna(df['synthesized_floor'])
+        # Use synthesized floors for all drivers (JSON floors are not accurate)
+        df['floor'] = df['synthesized_floor']
 
         print(f"   ✅ Added {len(feature_maps)} NASCAR features to {len(df)} drivers")
 
@@ -420,15 +412,39 @@ class NASCARDataProcessor(BaseDataProcessor):
     def _extract_ownership_data(self, data: Dict[str, Any]) -> Dict[str, float]:
         """Extract ownership data from JSON with error handling."""
         ownership_map = {}
-        try:
-            ownership_data = json.loads(data.get('OwnershipJson', '{}'))
-            for player in ownership_data.get('Players', []):
-                salary_id = player.get('SalaryId')
-                ownership = self._safe_float(player.get('Ownership', 10.0))
-                if salary_id:
-                    ownership_map[salary_id] = ownership
-        except (json.JSONDecodeError, KeyError) as e:
-            logger.warning(f"Failed to parse ownership data: {e}")
+
+        # Try multiple locations for ownership data
+        # 1. Check for Ownership.Projected.737 (NASCAR specific format)
+        if 'Ownership' in data and isinstance(data['Ownership'], dict):
+            projected = data['Ownership'].get('Projected', {})
+            # Look for any numeric key (like '737')
+            for key, players in projected.items():
+                if isinstance(players, list) and players:
+                    logger.info(f"Found ownership data in Ownership.Projected.{key}")
+                    for player in players:
+                        salary_id = player.get('SalaryId')
+                        ownership = self._safe_float(player.get('Owned', 10.0))
+                        if salary_id:
+                            ownership_map[salary_id] = ownership
+                    break  # Use first valid ownership list found
+
+        # 2. Fallback to OwnershipJson if available
+        if not ownership_map:
+            try:
+                ownership_data = json.loads(data.get('OwnershipJson', '{}'))
+                for player in ownership_data.get('Players', []):
+                    salary_id = player.get('SalaryId')
+                    ownership = self._safe_float(player.get('Ownership', 10.0))
+                    if salary_id:
+                        ownership_map[salary_id] = ownership
+            except (json.JSONDecodeError, KeyError) as e:
+                logger.warning(f"No OwnershipJson found or failed to parse: {e}")
+
+        if ownership_map:
+            logger.info(f"Extracted ownership for {len(ownership_map)} players")
+        else:
+            logger.warning("No ownership data found, using default 10% for all players")
+
         return ownership_map
 
     def _safe_float(self, value: Any, default: float = 0.0) -> float:
@@ -486,7 +502,7 @@ class NASCARDataProcessor(BaseDataProcessor):
 
         # Ensure floor <= projection
         mask = df['updated_floor'] > df['updated_projection']
-        df.loc[mask, 'updated_floor'] = df.loc[mask, 'updated_projection'] * 0.8  # Max 80% floor
+        df.loc[mask, 'updated_floor'] = df.loc[mask, 'updated_projection'] * NASCAR_CONFIG.MAX_UPDATED_FLOOR_RATIO
 
         # Ensure all values are non-negative
         df['updated_projection'] = np.maximum(df['updated_projection'], 0.1)
