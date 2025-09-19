@@ -64,8 +64,8 @@ def test_setup_data(sport: str = "mma"):
                 test_path / "json/raw.json"
             )
 
-        # Copy newsletter file (try different possible names)
-        newsletter_files = ["linestar.txt", "newsletter_signals.json"]
+        # Copy newsletter files if available (just raw text files now)
+        newsletter_files = ["linestar.txt", "newsletter.txt"]
         for newsletter_file in newsletter_files:
             source_newsletter = source_path / "newsletters" / newsletter_file
             if source_newsletter.exists():
@@ -73,7 +73,6 @@ def test_setup_data(sport: str = "mma"):
                     source_newsletter,
                     test_path / "newsletters" / newsletter_file
                 )
-                break
 
     print(f"✅ {sport.upper()} setup test passed - directories created at {test_path}")
     return test_path
