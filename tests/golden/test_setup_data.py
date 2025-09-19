@@ -78,15 +78,9 @@ def test_setup_data(sport: str = "mma"):
     return test_path
 
 
-# Legacy function for backward compatibility
-def test_setup_data_mma():
-    """Test MMA setup_data.py (legacy function)."""
-    return test_setup_data("mma")
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test setup_data.py for any sport")
-    parser.add_argument("--sport", default="mma", choices=["mma", "nascar", "nfl", "nba"],
+    parser.add_argument("--sport", default="mma", choices=["mma", "nascar", "nfl"],
                        help="Sport to test")
 
     args = parser.parse_args()
