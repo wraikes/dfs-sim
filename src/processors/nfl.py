@@ -94,9 +94,20 @@ class NFLDataProcessor(BaseDataProcessor):
             if match:
                 timestamp_ms = int(match.group(1))
                 timestamp_s = timestamp_ms / 1000
-                # The timestamp is already in UTC, just convert directly
-                dt = datetime.fromtimestamp(timestamp_s)
-                return dt.strftime('%Y-%m-%d %H:%M:%S')
+
+                # Convert timestamp to UTC first
+                from datetime import timezone, timedelta
+                dt_utc = datetime.fromtimestamp(timestamp_s, tz=timezone.utc)
+
+                # Add 4 hours to correct for data source timezone offset issue
+                # The source timestamps appear to be 4 hours early
+                corrected_dt = dt_utc + timedelta(hours=4)
+
+                # Convert to EST (-5) for display
+                est_tz = timezone(timedelta(hours=-5))
+                dt_est = corrected_dt.astimezone(est_tz)
+
+                return dt_est.strftime('%Y-%m-%d %H:%M:%S')
             return None
 
         df['game_datetime'] = df['game_timestamp'].apply(parse_game_timestamp)
