@@ -227,6 +227,14 @@ class BaseOptimizer(ABC):
 
         df = pd.read_csv(csv_path)
 
+        # Filter out inactive players (zero projections)
+        original_count = len(df)
+        df = df[df['projection'] > 0]
+        active_count = len(df)
+
+        if original_count > active_count:
+            print(f"   📋 Filtered {original_count - active_count} inactive players, using {active_count} active players")
+
         players = []
         for _, row in df.iterrows():
             player = self._create_player_from_row(row)
@@ -236,6 +244,14 @@ class BaseOptimizer(ABC):
 
     def load_players_from_dataframe(self, df: pd.DataFrame) -> list[Player]:
         """Load players from DataFrame."""
+        # Filter out inactive players (zero projections)
+        original_count = len(df)
+        df = df[df['projection'] > 0]
+        active_count = len(df)
+
+        if original_count > active_count:
+            print(f"   📋 Filtered {original_count - active_count} inactive players, using {active_count} active players")
+
         players = []
         for _, row in df.iterrows():
             player = self._create_player_from_row(row)

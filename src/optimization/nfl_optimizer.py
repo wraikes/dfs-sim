@@ -148,11 +148,11 @@ class NFLFieldGenerator(BaseFieldGenerator):
         """Generate a single opponent lineup."""
         try:
             # Sample players by position based on ownership
-            qb = self._sample_by_ownership(self.players_by_position[Position.QB], 1)[0]
+            qb = self._sample_qb_with_chalk_fade(self.players_by_position[Position.QB])
             rbs = self._sample_by_ownership(self.players_by_position[Position.RB], 3)[:2]  # Take top 2
             wrs = self._sample_by_ownership(self.players_by_position[Position.WR], 4)[:3]  # Take top 3
             te = self._sample_by_ownership(self.players_by_position[Position.TE], 1)[0]
-            dst = self._sample_by_ownership(self.players_by_position[Position.DST], 1)[0]
+            dst = self._sample_dst_by_volatility(self.players_by_position[Position.DST])
 
             # Sample FLEX from remaining skill positions
             flex_pool = (
@@ -202,6 +202,72 @@ class NFLFieldGenerator(BaseFieldGenerator):
         """Select players by ownership probability (required by base class)."""
         return self._sample_by_ownership(players, count)
 
+    def _sample_dst_by_volatility(self, dst_players: list[Player]) -> Player:
+        """Sample DST biased toward ceiling volatility instead of ownership."""
+        if not dst_players:
+            return None
+
+        # Create volatility weights (favor boom/bust potential over chalk)
+        weights = []
+        for dst in dst_players:
+            # Base weight from ceiling volatility (boom potential)
+            volatility = getattr(dst, 'ceiling_volatility', 0.2)
+
+            # Boost mid/low-owned volatile defenses
+            ownership_factor = 1.0
+            if dst.ownership < 3.0:  # Very low owned
+                ownership_factor = 2.0
+            elif dst.ownership < 8.0:  # Mid-owned
+                ownership_factor = 1.5
+            elif dst.ownership > 15.0:  # Chalk DST
+                ownership_factor = 0.6
+
+            # Combine volatility + ownership factors
+            weight = (volatility + 0.1) * ownership_factor
+            weights.append(weight)
+
+        # Sample weighted by boom potential
+        weights = np.array(weights)
+        weights = weights / weights.sum()  # Normalize
+
+        selected_idx = np.random.choice(len(dst_players), p=weights)
+        return dst_players[selected_idx]
+
+    def _sample_qb_with_chalk_fade(self, qb_players: list[Player]) -> Player:
+        """Sample QB with chalk fade weight to boost sub-5% owned rushing QBs."""
+        if not qb_players:
+            return None
+
+        # Create chalk-fade weights
+        weights = []
+        for qb in qb_players:
+            # Base weight from ownership (inverted - lower ownership = higher weight)
+            ownership_weight = 1.0 / max(qb.ownership, 0.5)
+
+            # Boost sub-5% owned QBs with rushing equity
+            if qb.ownership < 5.0:
+                # Check for rushing upside
+                rushing_bonus = 1.0
+                if hasattr(qb, 'qb_volume_indicator'):
+                    volume = getattr(qb, 'qb_volume_indicator', 0)
+                    if volume > 0:  # Any rushing involvement
+                        rushing_bonus = 3.0  # Major boost for sub-5% owned rushing QBs
+
+                ownership_weight *= rushing_bonus
+
+            # Cap QB ownership exposure (prevent too much Herbert/Allen/Mahomes)
+            elif qb.ownership > 15.0:  # High-owned chalk QBs
+                ownership_weight *= 0.4  # Significant fade
+
+            weights.append(ownership_weight)
+
+        # Sample weighted by chalk-fade + rushing equity
+        weights = np.array(weights)
+        weights = weights / weights.sum()  # Normalize
+
+        selected_idx = np.random.choice(len(qb_players), p=weights)
+        return qb_players[selected_idx]
+
     def _has_invalid_combinations(self, lineup) -> bool:
         """Check for invalid player combinations (required by base class)."""
         # NFL doesn't have invalid combinations like opposing fighters
@@ -246,10 +312,22 @@ class NFLOptimizer(BaseOptimizer):
         if len(players) != 9:
             return False
 
-        # Check salary cap and minimum usage
+        # Check salary cap and add diversity constraints
         total_salary = sum(p.salary for p in players)
         if total_salary > self.constraints.salary_cap:
             return False
+
+        # Tiered salary diversity constraints (matches pro distribution)
+        rand = random.random()
+        if rand < 0.10:  # 10% use <$48.5k (high contrarian)
+            max_allowed_salary = self.constraints.salary_cap - random.randint(1500, 2500)
+            if total_salary > max_allowed_salary:
+                return False
+        elif rand < 0.30:  # 20% use $48.5-49.5k (medium contrarian)
+            max_allowed_salary = self.constraints.salary_cap - random.randint(500, 1500)
+            if total_salary > max_allowed_salary:
+                return False
+        # 70% use $49.5-50k (optimal salary usage) - no constraint needed
 
 
         # Check position requirements
@@ -293,15 +371,33 @@ class NFLOptimizer(BaseOptimizer):
         if any(count > max_same_game for count in game_counts.values()):
             return False
 
-        # Check QB stacking requirement
-        if self.constraints.sport_rules.get('require_qb_stack', True):
-            qbs = [p for p in players if p.position == Position.QB]
-            if qbs:
-                qb_team = qbs[0].team
-                teammates = [p for p in players if p.team == qb_team and p.position != Position.QB]
-                min_stack = self.constraints.sport_rules.get('min_stack_size', 2)
-                if len(teammates) < min_stack - 1:  # -1 because QB counts as 1
-                    return False
+        # Randomized QB stacking (matches historical Milly Maker distribution)
+        qbs = [p for p in players if p.position == Position.QB]
+        if qbs:
+            qb_team = qbs[0].team
+            teammates = [p for p in players if p.team == qb_team and p.position != Position.QB]
+
+            # Historical distribution: 40-50% QB+1, 30% QB+2, 10-15% QB+3, 15-20% naked QB
+            rand = random.random()
+            required_stack_size = 0
+
+            if rand < 0.15:  # 15% naked QB (no stack requirement)
+                required_stack_size = 0
+            elif rand < 0.60:  # 45% QB + 1 pass catcher
+                required_stack_size = 1
+            elif rand < 0.90:  # 30% QB + 2 pass catchers
+                required_stack_size = 2
+            else:  # 10% QB + 3+ pass catchers
+                required_stack_size = 3
+
+            if len(teammates) < required_stack_size:
+                return False
+
+        # Total ownership diversity constraint
+        total_ownership = sum(p.ownership for p in players)
+        if random.random() < 0.3:  # 30% of lineups must be contrarian
+            if total_ownership > 120:  # Force some low-ownership builds
+                return False
 
         return True
 
@@ -450,63 +546,107 @@ class NFLOptimizer(BaseOptimizer):
             lineup.percentile_95 = np.percentile(scores, 95)
             lineup.percentile_99 = np.percentile(scores, 99)
 
-        # Base scoring: 70% simulation results + 30% other factors
+        # Rebalanced scoring: 70% simulation + 20% ownership leverage + 10% correlation
         sim_score = lineup.percentile_95 * 0.7
 
-        # Stacking bonuses (critical for NFL GPP success)
+        # Light-touch stacking bonuses (reduced from previous over-weighting)
         stack_bonus = 0
-        if lineup.primary_stack_size >= 2:
-            stack_bonus += 20  # Base QB stack bonus
-        if lineup.primary_stack_size >= 3:
-            stack_bonus += 15  # Large stack bonus
-        if lineup.bring_back_stack:
-            stack_bonus += 10  # Bring-back correlation bonus
+        if lineup.primary_stack_size == 2:
+            stack_bonus += 8  # Reduced from 20
+        elif lineup.primary_stack_size == 3:
+            stack_bonus += 5  # Reduced from 15 (risk of over-ownership)
+        elif lineup.primary_stack_size >= 4:
+            stack_bonus += 2  # Minimal bonus for mega-stacks
 
-        # Target share bonus (high-target players in stacks)
-        target_bonus = min(lineup.total_target_share * 2, 30)  # Cap at 30 points
+        # Conditional bring-back bonus only if leverage exists
+        if lineup.bring_back_stack and lineup.qb:
+            # Calculate average ownership of bring-back players
+            qb_game_id = lineup.qb.metadata.get('game_id', '')
+            bring_back_players = [p for p in lineup.players
+                                if p.team != lineup.qb.team and p.metadata.get('game_id', '') == qb_game_id]
+            if bring_back_players:
+                avg_ownership = np.mean([p.ownership for p in bring_back_players])
+                if avg_ownership < 10:  # Only bonus if contrarian
+                    stack_bonus += 5
+                # No blanket bonus for bring-backs
 
-        # Leverage scoring (contrarian ownership)
-        leverage_bonus = self._calculate_lineup_value_leverage(lineup)
+        # Normalized chaos equity bonus: reward 2-3 chaos players per lineup
+        chaos_players = []
+        for p in lineup.players:
+            if hasattr(p, 'ceiling_volatility'):
+                ceiling_vol = getattr(p, 'ceiling_volatility', 0)
+                if ceiling_vol > 0.3:  # High variance threshold
+                    chaos_players.append(ceiling_vol)
 
-        # Ceiling potential (95th percentile focus)
-        ceiling_bonus = (lineup.percentile_95 - lineup.percentile_50) * 0.3
+        # Optimal chaos: 2-3 high-variance players (not 6+ dart throws)
+        chaos_count = len(chaos_players)
+        if chaos_count >= 2 and chaos_count <= 3:
+            variance_bonus = sum(chaos_players) * 1.2  # Bonus for optimal chaos
+        elif chaos_count == 1:
+            variance_bonus = sum(chaos_players) * 0.8  # Slight bonus for 1 chaos
+        elif chaos_count > 3:
+            variance_bonus = sum(chaos_players) * 0.4  # Penalty for too many darts
+        else:
+            variance_bonus = 0
 
-        # NEW: Engineered features bonus
+        # Enhanced leverage scoring (now 20% of total score)
+        leverage_bonus = self._calculate_lineup_value_leverage(lineup) * 0.8
+
+        # Ceiling potential (focus on upside)
+        ceiling_bonus = (lineup.percentile_95 - lineup.percentile_50) * 0.2
+
+        # Engineered features bonus
         engineered_bonus = self._calculate_engineered_features_bonus(lineup)
 
-        # Combine all scoring components
-        total_score = sim_score + stack_bonus + target_bonus + (leverage_bonus * 0.3) + ceiling_bonus + engineered_bonus
+        # Combine all scoring components (rebalanced weights)
+        total_score = sim_score + (leverage_bonus * 0.25) + stack_bonus + variance_bonus + ceiling_bonus + engineered_bonus
 
         return max(total_score, 0)
 
     def _calculate_engineered_features_bonus(self, lineup: BaseLineup) -> float:
-        """Calculate bonus from engineered features."""
+        """Calculate bonus from engineered features with emphasis on chaos equity."""
         total_bonus = 0.0
 
         for player in lineup.players:
+            # Chaos equity: High ceiling volatility (real boom/bust indicator)
+            if hasattr(player, 'ceiling_volatility'):
+                ceiling_vol = getattr(player, 'ceiling_volatility', 0)
+                if ceiling_vol > 0.3:  # High ceiling variance (boom/bust potential)
+                    total_bonus += ceiling_vol * 8  # Reward players with high upside variance
+
+            # Low-owned players with TD equity
+            if player.ownership < 10.0:  # Sub-10% owned
+                # RB goal line value (TD vulture potential)
+                if player.position == Position.RB and hasattr(player, 'goal_line_value'):
+                    gl_value = getattr(player, 'goal_line_value', 0)
+                    if gl_value > 0.1:  # Any goal line usage
+                        total_bonus += gl_value * 15  # High TD opportunity bonus for low-owned
+
+                # WR/TE deep target potential
+                if player.position in [Position.WR, Position.TE] and hasattr(player, 'target_efficiency'):
+                    target_eff = getattr(player, 'target_efficiency', 0)
+                    if target_eff > 0.3:  # Decent target efficiency
+                        total_bonus += target_eff * 8  # Bonus for potential random WR explosion
+
+            # DST volatility bonus (sack/turnover upside regardless of projection)
+            if player.position == Position.DST:
+                # Boost DSTs with high ceiling variance (boom potential)
+                if hasattr(player, 'ceiling_volatility'):
+                    volatility = getattr(player, 'ceiling_volatility', 0)
+                    if volatility > 0.4:  # High ceiling variance
+                        total_bonus += volatility * 12  # Reward sack/pick-6 potential
+
+            # Leverage bonus (projection per ownership ratio) - enhanced weight
+            if hasattr(player, 'projection_per_ownership'):
+                leverage = getattr(player, 'projection_per_ownership', 0)
+                if leverage > 2.0:  # High leverage play
+                    total_bonus += (leverage - 2.0) * 5  # Increased bonus for mispricing
+
             # Value efficiency bonus (ceiling per dollar)
             if hasattr(player, 'ceiling_per_dollar'):
                 ceiling_efficiency = getattr(player, 'ceiling_per_dollar', 0)
                 if ceiling_efficiency > 4.0:  # Above average ceiling per $1K
-                    total_bonus += (ceiling_efficiency - 4.0) * 2  # Bonus for efficient ceiling
-
-            # Leverage bonus (projection per ownership ratio)
-            if hasattr(player, 'projection_per_ownership'):
-                leverage = getattr(player, 'projection_per_ownership', 0)
-                if leverage > 1.5:  # High leverage play
-                    total_bonus += (leverage - 1.5) * 3  # Bonus for leverage
-
-            # Risk-adjusted bonus (Sharpe ratio)
-            if hasattr(player, 'sharpe_ratio'):
-                sharpe = getattr(player, 'sharpe_ratio', 0)
-                if sharpe > 0.6:  # Good risk-adjusted return
-                    total_bonus += (sharpe - 0.6) * 5  # Bonus for risk-adjusted upside
-
-            # Position-specific bonuses
-            if player.position == Position.RB and hasattr(player, 'goal_line_value'):
-                gl_value = getattr(player, 'goal_line_value', 0)
-                if gl_value > 0.2:  # Meaningful goal line usage
-                    total_bonus += gl_value * 10  # TD opportunity bonus
+                    total_bonus += (ceiling_efficiency - 4.0) * 1.5  # Reduced from 2 (less important)
 
             if player.position in [Position.WR, Position.TE] and hasattr(player, 'target_efficiency'):
                 target_eff = getattr(player, 'target_efficiency', 0)

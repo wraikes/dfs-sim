@@ -40,7 +40,7 @@ class NFLDataProcessor(BaseDataProcessor):
                     contest_id = contest_ids[0]
                     for ownership_player in projected[contest_id]:
                         salary_id = ownership_player.get('SalaryId')
-                        owned_pct = ownership_player.get('Owned', 10.0)
+                        owned_pct = ownership_player.get('Owned')
                         if salary_id:
                             ownership_map[salary_id] = owned_pct
 
@@ -50,8 +50,8 @@ class NFLDataProcessor(BaseDataProcessor):
                 player_id = player_data['PID']
                 salary_id = player_data['Id']
 
-                # Get ownership from ownership_map
-                ownership = ownership_map.get(salary_id, 10.0)
+                # Get ownership from ownership_map (preserve None if not found)
+                ownership = ownership_map.get(salary_id)
 
                 player = {
                     'player_id': player_id,
@@ -61,7 +61,7 @@ class NFLDataProcessor(BaseDataProcessor):
                     'floor': player_data.get('Floor', 0.0),
                     'ceiling': player_data.get('Ceil', 0.0),
                     'ownership': ownership,
-                    'std_dev': 25.0,  # NFL variance (lower than NASCAR/MMA)
+                    'std_dev': 25.0,  # NFL baseline variance placeholder
                     'position': player_data.get('POS', ''),
                     'team': player_data.get('PTEAM', ''),
                     'opponent': player_data.get('OTEAM', ''),
@@ -176,7 +176,7 @@ class NFLDataProcessor(BaseDataProcessor):
             lambda x: target_share_map.get(x, {}).get('targets_per_game', 0)
         )
         df['snap_pct'] = df['player_id'].map(
-            lambda x: snap_pct_map.get(x, {}).get('snap_pct', 50.0)  # Default 50%
+            lambda x: snap_pct_map.get(x, {}).get('snap_pct')  # Preserve None if not available
         )
         df['rz_targets'] = df['player_id'].map(
             lambda x: snap_pct_map.get(x, {}).get('rz_targets', 0)
@@ -193,7 +193,7 @@ class NFLDataProcessor(BaseDataProcessor):
         for pos in ['rb', 'wr', 'te']:
             pos_mask = df['position'].str.lower() == pos
             df.loc[pos_mask, 'matchup_fppg_allowed'] = df.loc[pos_mask, 'player_id'].map(
-                lambda x: pace_metrics_map.get(x, {}).get(f'{pos}_fppg_allowed', 15.0)
+                lambda x: pace_metrics_map.get(x, {}).get(f'{pos}_fppg_allowed')
             )
 
         return df
@@ -209,38 +209,28 @@ class NFLDataProcessor(BaseDataProcessor):
         """Calculate NFL-specific metrics."""
         df = df.copy()
 
-        # NFL position variance multipliers (QB most consistent, DST most volatile)
-        position_variance = {
-            'QB': 0.8,   # Low variance - most predictable scoring
-            'RB': 1.0,   # Baseline variance
-            'WR': 1.1,   # Slightly higher variance
-            'TE': 1.0,   # Similar to RB
-            'K': 1.3,    # Higher variance - weather/game script dependent
-            'DST': 1.5   # Highest variance - boom/bust potential
-        }
-
-        # Apply position-based variance adjustments
-        df['variance_multiplier'] = df['position'].map(position_variance).fillna(1.0)
-        df['adjusted_std_dev'] = df['std_dev'] * df['variance_multiplier']
+        # Skip variance adjustments since std_dev is just a placeholder
+        df['variance_multiplier'] = 1.0
+        df['adjusted_std_dev'] = df['std_dev']  # Keep placeholder as-is
 
         # Calculate ceiling adjustments based on position and matchup
         df['ceiling_adjustment'] = 1.0
 
         # QB ceiling boost for high-total games (extract from game_info if available)
-        qb_mask = df['position'] == 'QB'
+        qb_mask = df['position'] == Position.QB.value
         df.loc[qb_mask, 'ceiling_adjustment'] = 1.1
 
         # WR/TE ceiling boost vs weak pass defense (simplified - use opponent rank)
-        pass_catcher_mask = df['position'].isin(['WR', 'TE'])
+        pass_catcher_mask = df['position'].isin([Position.WR.value, Position.TE.value])
         weak_defense_mask = df['opponent_rank'] >= 20  # Bottom defenses
         df.loc[pass_catcher_mask & weak_defense_mask, 'ceiling_adjustment'] = 1.15
 
         # RB ceiling boost vs weak run defense
-        rb_mask = df['position'] == 'RB'
+        rb_mask = df['position'] == Position.RB.value
         df.loc[rb_mask & weak_defense_mask, 'ceiling_adjustment'] = 1.1
 
         # DST ceiling boost vs weak offense (lower opponent rank = weaker offense)
-        dst_mask = df['position'] == 'DST'
+        dst_mask = df['position'] == Position.DST.value
         weak_offense_mask = df['opponent_rank'] <= 10
         df.loc[dst_mask & weak_offense_mask, 'ceiling_adjustment'] = 1.2
 
@@ -264,9 +254,8 @@ class NFLDataProcessor(BaseDataProcessor):
 
         print("   📊 Engineering NFL risk-adjusted metrics...")
 
-        # Risk-Adjusted Metrics (avoid division by zero)
-        df['sharpe_ratio'] = np.where(df['adjusted_std_dev'] > 0,
-                                      (df['projection'] - df['floor']) / df['adjusted_std_dev'], 0)
+        # Skip risk-adjusted metrics since std_dev is placeholder
+        df['sharpe_ratio'] = 0  # Disable since std_dev is not real data
         df['ceiling_volatility'] = np.where(df['projection'] > 0,
                                             (df['adjusted_ceiling'] - df['projection']) / df['projection'], 0)
         df['confidence_weighted_proj'] = df['projection'] * (df['confidence'] / 100.0)
@@ -275,15 +264,15 @@ class NFLDataProcessor(BaseDataProcessor):
 
         # Position-Specific Features
         # RB: Goal line value (RZ targets × snap share)
-        df['goal_line_value'] = np.where(df['position'] == 'RB',
+        df['goal_line_value'] = np.where(df['position'] == Position.RB.value,
                                          df['rz_targets'] * (df['snap_pct'] / 100.0), 0)
 
         # WR/TE: Target efficiency (targets per snap)
-        df['target_efficiency'] = np.where(df['position'].isin(['WR', 'TE']) & (df['snap_pct'] > 0),
+        df['target_efficiency'] = np.where(df['position'].isin([Position.WR.value, Position.TE.value]) & (df['snap_pct'] > 0),
                                            df['targets_per_game'] / (df['snap_pct'] / 100.0), 0)
 
         # QB: Passing volume indicator
-        df['qb_volume_indicator'] = np.where(df['position'] == 'QB',
+        df['qb_volume_indicator'] = np.where(df['position'] == Position.QB.value,
                                              df['targets_per_game'] * df['snap_pct'] / 100.0, 0)
 
         print("   🏈 Engineering NFL game context features...")
